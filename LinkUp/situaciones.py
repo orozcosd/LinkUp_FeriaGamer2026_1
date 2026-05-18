@@ -171,6 +171,151 @@ def situacion_aliado(nombre):
     ]
     return raiz
 
+def situacion_bully_amenazas(nombre):
+    raiz = NodoArbol(
+        f"{nombre} está enviando amenazas violentas por mensajes privados\n"
+        "a varios miembros de la red. Las víctimas tienen miedo. ¿Qué haces?"
+    )
+    sub_evidencia = NodoArbol(
+        "Recolectaste capturas como evidencia. ¿Cómo procedes ahora?"
+    )
+    sub_evidencia.opciones = [
+        ("Reportar a las autoridades junto con las víctimas.",
+         _hoja(f"{nombre} es sancionado/a. Las víctimas se sienten protegidas.",
+               tipo="bueno", puntos=35, salud=18, resolver=True,
+               poder="escudo_empatia"), {}),
+        ("Enviar la evidencia solo a moderadores de la plataforma.",
+         _hoja("La cuenta es suspendida temporalmente. Alivio parcial.",
+               tipo="bueno", puntos=20, salud=10, resolver=True), {}),
+    ]
+    raiz.opciones = [
+        ("Ayudar a las víctimas a guardar evidencia antes de actuar.", sub_evidencia, {}),
+        ("Confrontar públicamente a quien amenaza.",
+         _hoja("La amenaza se intensifica y aparecen más cuentas hostiles.",
+               tipo="malo", puntos=-18, salud=-15), {}),
+        ("Esperar a ver si se detiene solo/a.",
+         _hoja("Las amenazas escalan. Una víctima abandona la red.",
+               tipo="malo", puntos=-25, salud=-20), {}),
+    ]
+    return raiz
+
+
+def situacion_bully_doxxing(nombre):
+    raiz = NodoArbol(
+        f"{nombre} publicó la dirección y el teléfono de una víctima\n"
+        "para incitar a otros a hostigarla. La información ya se difunde."
+    )
+    raiz.opciones = [
+        ("Reportar masivamente el post y avisar a la víctima de inmediato.",
+         _hoja("Eliminan la publicación a tiempo. La víctima cambia ajustes de privacidad.",
+               tipo="bueno", puntos=30, salud=14, resolver=True,
+               poder="voz_amplificada"), {}),
+        ("Pedir a la comunidad que no comparta ni interactúe con el post.",
+         _hoja("Reduces el alcance, pero algunas capturas siguen circulando.",
+               tipo="neutro", puntos=8, salud=-2), {}),
+        ("Responder al post pidiéndole que la borre.",
+         _hoja(f"{nombre} se burla y sube más datos. Situación empeora.",
+               tipo="malo", puntos=-20, salud=-18), {}),
+    ]
+    return raiz
+
+
+def situacion_bully_grupo(nombre):
+    raiz = NodoArbol(
+        f"{nombre} lidera un grupo que ataca coordinadamente a un usuario\n"
+        "cada semana. Hoy eligieron a su próxima víctima. ¿Cómo respondes?"
+    )
+    sub_aliados = NodoArbol(
+        "Reúnes aliados para una contracampaña. ¿Qué enfoque eliges?"
+    )
+    sub_aliados.opciones = [
+        ("Lanzar una campaña positiva visibilizando a la víctima con respeto.",
+         _hoja("La narrativa cambia. El grupo pierde seguidores y se disuelve.",
+               tipo="bueno", puntos=35, salud=16, resolver=True,
+               poder="red_apoyo"), {}),
+        ("Hablar uno a uno con miembros del grupo para que se retiren.",
+         _hoja("Tres integrantes se salen. El grupo pierde fuerza.",
+               tipo="bueno", puntos=22, salud=10, resolver=True), {}),
+    ]
+    raiz.opciones = [
+        ("Organizar a la comunidad antes de que ocurra el ataque.", sub_aliados, {}),
+        ("Enfrentar directamente al líder del grupo.",
+         _hoja("El grupo te convierte en su nuevo objetivo.",
+               tipo="malo", puntos=-22, salud=-18), {}),
+        ("Avisar solo a la víctima para que se proteja.",
+         _hoja("La víctima se protege, pero el grupo encuentra otra.",
+               tipo="neutro", puntos=-5, salud=-8), {}),
+    ]
+    return raiz
+
+
+def situacion_bully_chantaje(nombre):
+    raiz = NodoArbol(
+        f"{nombre} amenaza con publicar fotos privadas de un compañero/a\n"
+        "si no hace lo que pide. La víctima entró en pánico."
+    )
+    raiz.opciones = [
+        ("Acompañar a la víctima a hablar con un adulto de confianza y reportar.",
+         _hoja("La víctima recibe apoyo real. El chantaje se detiene legalmente.",
+               tipo="bueno", puntos=40, salud=20, resolver=True,
+               poder="escudo_empatia"), {}),
+        ("Asesorarle para que no ceda y bloquee de inmediato.",
+         _hoja("La víctima se siente acompañada, pero la presión sigue.",
+               tipo="neutro", puntos=10, salud=2), {}),
+        ("Recomendar que ceda para que no publique nada.",
+         _hoja(f"{nombre} pide más cada vez. El daño se profundiza.",
+               tipo="malo", puntos=-30, salud=-22), {}),
+    ]
+    return raiz
+
+
+def situacion_bully_provocacion(nombre):
+    raiz = NodoArbol(
+        f"{nombre} publica provocaciones constantes intentando que alguien\n"
+        "reaccione mal y quede como agresor. Es una trampa visible."
+    )
+    raiz.opciones = [
+        ("Educar a la comunidad: no alimentar al provocador, reportar y silenciar.",
+         _hoja("Sin público, las provocaciones pierden sentido. Nodo aislado.",
+               tipo="bueno", puntos=25, salud=12, resolver=True,
+               poder="voz_amplificada"), {}),
+        ("Responder con humor para desactivar la provocación.",
+         _hoja(f"Funciona a medias: {nombre} cambia de táctica.",
+               tipo="neutro", puntos=8, salud=2), {}),
+        ("Discutir punto por punto en los comentarios.",
+         _hoja("Le das visibilidad. Aparecen más bullies imitadores.",
+               tipo="malo", puntos=-15, salud=-12), {}),
+    ]
+    return raiz
+
+
+def situacion_bully_anonimo(nombre):
+    raiz = NodoArbol(
+        f"Cuentas anónimas atacan a varios usuarios. Se sospecha que {nombre}\n"
+        "está detrás de todas. ¿Cómo manejas la incertidumbre?"
+    )
+    sub_invest = NodoArbol(
+        "Investigaste con cuidado: patrones de escritura coinciden. ¿Qué haces?"
+    )
+    sub_invest.opciones = [
+        ("Compartir evidencia con moderación sin exponer públicamente.",
+         _hoja("Las cuentas falsas caen. Se evita linchamiento injusto.",
+               tipo="bueno", puntos=30, salud=14, resolver=True,
+               poder="red_apoyo"), {}),
+        ("Exponer a {nombre} públicamente con la evidencia.",
+         _hoja("Aciertas, pero se genera una caza de brujas. La red se polariza.",
+               tipo="neutro", puntos=5, salud=-5), {}),
+    ]
+    raiz.opciones = [
+        ("Recolectar evidencia con calma antes de acusar.", sub_invest, {}),
+        ("Acusar de inmediato basándote en la sospecha.",
+         _hoja("La acusación sin pruebas se vuelve en tu contra.",
+               tipo="malo", puntos=-18, salud=-12), {}),
+        ("Ignorar el patrón: cada cuenta por separado.",
+         _hoja("Los ataques continúan sin freno. Más víctimas afectadas.",
+               tipo="malo", puntos=-15, salud=-15), {}),
+    ]
+    return raiz
 
 def situacion_bully_arrepentido(nombre):
     """Un acosador parece arrepentido."""
@@ -214,7 +359,10 @@ def situacion_bully_arrepentido(nombre):
 PLANTILLAS_POR_TIPO = {
     "victima": [situacion_rumor_falso, situacion_acoso_directo,
                 situacion_exclusion, situacion_suplantacion],
-    "bully":   [situacion_bully_arrepentido, situacion_acoso_directo],
+    "bully":   [situacion_bully_arrepentido, situacion_acoso_directo,
+               situacion_bully_amenazas, situacion_bully_doxxing,
+               situacion_bully_grupo, situacion_bully_chantaje,
+               situacion_bully_provocacion, situacion_bully_anonimo],
     "aliado":  [situacion_aliado],
     "neutro":  [situacion_rumor_falso, situacion_exclusion],
     "central": [situacion_acoso_directo],
