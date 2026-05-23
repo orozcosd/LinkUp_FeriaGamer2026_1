@@ -1069,13 +1069,23 @@ class Juego:
                             self.ui.col["peligro"])
 
     def _conectar_cliente(self):
-        if self.cliente:
-            self.cliente.desconectar()
-        self.cliente = Cliente(self.config_host, self.config_port,
-                               self.nombre_jugador, self.skin_idx)
-        ok = self.cliente.conectar()
-        if not ok:
-            self.estado.msg("Error de conexión", self.ui.col["peligro"])
+            if self.cliente:
+                self.cliente.desconectar()
+            # Permite "192.168.1.12" o "192.168.1.12:50007"
+            host = self.config_host.strip()
+            puerto = self.config_port
+            if ":" in host:
+                host, _, puerto_txt = host.partition(":")
+                host = host.strip()
+                try:
+                    puerto = int(puerto_txt.strip())
+                except ValueError:
+                    puerto = self.config_port
+            self.cliente = Cliente(host, puerto,
+                                self.nombre_jugador, self.skin_idx)
+            ok = self.cliente.conectar()
+            if not ok:
+                self.estado.msg("Error de conexión", self.ui.col["peligro"])
 
     def _iniciar_partida_multijugador(self):
         self._iniciar_partida_local()
