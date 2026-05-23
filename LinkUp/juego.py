@@ -833,7 +833,7 @@ class Juego:
         self.ui.panel(panel, color=c["fondo"], borde=c["primario"],
                       radio=18, alpha=240)
 
-        self.ui.texto("⏸  Pausa", "xl", c["primario"],
+        self.ui.texto("Pausa", "xl", c["primario"],
                       panel.centerx, panel.y + 20, centrado=True)
         self.ui.texto("La partida está en pausa.", "sm", c["texto_sec"],
                       panel.centerx, panel.y + 80, centrado=True)
@@ -984,7 +984,7 @@ class Juego:
                         arbol.elegir(idx); self.audio.play("click")
 
         rect_back = pygame.Rect(panel.x + 30, panel.bottom - 70, 180, 46)
-        self.ui.boton(rect_back, "← Salir", hover=rect_back.collidepoint(mouse))
+        self.ui.boton(rect_back, "Salir", hover=rect_back.collidepoint(mouse))
         for e in eventos:
             if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 and rect_back.collidepoint(e.pos):
                 self.pantalla = "mapa"

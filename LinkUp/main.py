@@ -1,5 +1,5 @@
 """
-LinkUp - Guardianes del Nexo
+LinkUp - S Guardianes del Nexo
 Punto de entrada del juego.
 
 Ejecutar:
