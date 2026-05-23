@@ -513,7 +513,7 @@ class Juego:
                     self.config_host = self.config_host[:-1]
                 elif len(self.config_host) < 20:
                     ch = e.unicode
-                    if ch and (ch.isdigit() or ch == "."):
+                    if ch and (ch.isdigit() or ch == ".:"):
                         self.config_host += ch
 
     # ===================== MAPA =====================
