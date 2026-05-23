@@ -520,7 +520,12 @@ class Juego:
     def pantalla_mapa(self, eventos, dt):
         c = self.ui.col
         self._dibujar_fondo("fondo_mapa")
-
+           
+        if self.servidor:
+            self.servidor.procesar()
+            self._sincronizar_jugadores_conectados()   # ← AÑADIR ESTA LÍNEA
+            self._procesar_acciones_servidor()
+            
         if self.servidor:
             self.servidor.procesar()
             self._procesar_acciones_servidor()
@@ -1087,12 +1092,25 @@ class Juego:
             if not ok:
                 self.estado.msg("Error de conexión", self.ui.col["peligro"])
 
+    def _sincronizar_jugadores_conectados(self):
+        """Elimina de la lista de jugadores a los que ya no están en el servidor."""
+        if not self.servidor:
+            return
+        ids_activos = {jid for jid, _, _ in self.servidor.jugadores()}
+        antes = len(self.estado.jugadores)
+        self.estado.jugadores = [
+            j for j in self.estado.jugadores if j["id"] in ids_activos
+        ]
+        if len(self.estado.jugadores) < antes:
+            self.estado.msg("Un jugador se desconectó", self.ui.col["texto"])
+
+            self._difundir_estado()
     def _iniciar_partida_multijugador(self):
         self._iniciar_partida_local()
         self.estado.modo = "servidor"
         for jid, nombre, skin in self.servidor.jugadores():
             self.estado.jugadores.append({
-                "id": len(self.estado.jugadores),
+                "id": jid,
                 "nombre": nombre, "skin": skin, "pos": 0, "puntos": 0,
                 "poderes": dict(settings.PODERES_INICIALES),
                 "color": settings.SKINS[skin]["color"],
