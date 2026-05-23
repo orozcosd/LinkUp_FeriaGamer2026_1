@@ -87,7 +87,7 @@ PODERES_INICIALES = {
 }
 
 # Red
-HOST_DEFAULT = "127.0.0.1"
+HOST_DEFAULT = "0.0.0.0"
 PORT_DEFAULT = 50007
 
 # Estado del juego
