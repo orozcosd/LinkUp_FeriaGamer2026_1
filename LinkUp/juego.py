@@ -1053,6 +1053,7 @@ class Juego:
             "pos": 0, "puntos": 0,
             "poderes": dict(settings.PODERES_INICIALES),
             "color": partida_color,
+            "es_host": True,
         }]
         self.estado.jugador_local = 0
         self.estado.tiempo_inicio = time.time()
@@ -1093,27 +1094,31 @@ class Juego:
                 self.estado.msg("Error de conexión", self.ui.col["peligro"])
 
     def _sincronizar_jugadores_conectados(self):
-        """Elimina de la lista de jugadores a los que ya no están en el servidor."""
+        """Elimina de la lista de jugadores a los que ya no están en el servidor.
+        El host siempre se preserva (es_host=True)."""
         if not self.servidor:
             return
-        ids_activos = {jid for jid, _, _ in self.servidor.jugadores()}
+        # IDs activos del servidor + 1 para no chocar con el host (id=0)
+        ids_activos = {jid + 1 for jid, _, _ in self.servidor.jugadores()}
         antes = len(self.estado.jugadores)
         self.estado.jugadores = [
-            j for j in self.estado.jugadores if j["id"] in ids_activos
+            j for j in self.estado.jugadores
+            if j.get("es_host") or j["id"] in ids_activos
         ]
         if len(self.estado.jugadores) < antes:
             self.estado.msg("Un jugador se desconectó", self.ui.col["texto"])
-
             self._difundir_estado()
+
     def _iniciar_partida_multijugador(self):
         self._iniciar_partida_local()
         self.estado.modo = "servidor"
         for jid, nombre, skin in self.servidor.jugadores():
             self.estado.jugadores.append({
-                "id": jid,
+                "id": jid + 1,  # offset para no chocar con host id=0
                 "nombre": nombre, "skin": skin, "pos": 0, "puntos": 0,
                 "poderes": dict(settings.PODERES_INICIALES),
                 "color": settings.SKINS[skin]["color"],
+                "es_host": False,
             })
         self._difundir_estado()
         self.audio.play("nivel")
