@@ -4,6 +4,7 @@ Lógica principal y pantallas pygame, con soporte de imágenes desde assets/.
 """
 
 import math
+import os
 import random
 import sys
 import time
@@ -16,6 +17,17 @@ from situaciones import crear_situacion, nombre_aleatorio
 from audio import GestorAudio
 from red import Servidor, Cliente, descubrir_ip_local
 from recursos import Recursos
+from efectos import (
+    crear_gradiente_cacheado,
+    dibujar_glow,
+    GestorParticulas,
+    Transicion,
+    pulso,
+    aclarar,
+)
+
+
+_DIR_BASE = os.path.dirname(os.path.abspath(__file__))
 
 
 # ---------------------------------------------------------------------------
@@ -30,10 +42,24 @@ class UI:
 
     def _cargar_fuentes(self):
         tam = settings.TAMANOS_FUENTE[self.tam_fuente]
-        self.fuentes = {
-            k: pygame.font.SysFont("arial", v, bold=(k in ("lg", "xl")))
-            for k, v in tam.items()
-        }
+        ruta_titulo = os.path.join(_DIR_BASE, settings.FUENTE_TITULOS)
+        ruta_texto = os.path.join(_DIR_BASE, settings.FUENTE_TEXTO)
+        usar_ttf_titulo = os.path.isfile(ruta_titulo)
+        usar_ttf_texto = os.path.isfile(ruta_texto)
+
+        def _fuente(size_key, valor):
+            es_titulo = size_key in ("lg", "xl")
+            try:
+                if es_titulo and usar_ttf_titulo:
+                    return pygame.font.Font(ruta_titulo, valor)
+                if (not es_titulo) and usar_ttf_texto:
+                    return pygame.font.Font(ruta_texto, valor)
+            except (pygame.error, OSError):
+                pass
+            # fallback: fuente del sistema
+            return pygame.font.SysFont("arial", valor, bold=es_titulo)
+
+        self.fuentes = {k: _fuente(k, v) for k, v in tam.items()}
 
     @property
     def col(self):
@@ -67,34 +93,76 @@ class UI:
             self.screen.blit(r, rect)
             y_act += r.get_height()
 
-    def panel(self, rect, color=None, borde=None, radio=12, alpha=None):
+    def panel(self, rect, color=None, borde=None, radio=14, alpha=None):
+        """Panel glassmorphism: fondo semitransparente + borde fino cian."""
+        c = self.col
         if color is None:
-            color = self.col["panel"]
-        if alpha is not None:
-            surf = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
-            pygame.draw.rect(surf, (*color, alpha), surf.get_rect(),
-                             border_radius=radio)
-            self.screen.blit(surf, rect.topleft)
-        else:
-            pygame.draw.rect(self.screen, color, rect, border_radius=radio)
-        if borde:
-            pygame.draw.rect(self.screen, borde, rect, 2, border_radius=radio)
+            color = c["panel"]
+        # Fondo translúcido
+        alpha_final = alpha if alpha is not None else 180
+        surf = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+        pygame.draw.rect(surf, (*color, alpha_final), surf.get_rect(),
+                         border_radius=radio)
+        self.screen.blit(surf, rect.topleft)
+        # Borde
+        color_borde = borde if borde is not None else c.get("panel_borde", c["primario"])
+        pygame.draw.rect(self.screen, color_borde, rect, 1, border_radius=radio)
 
     def boton(self, rect, etiqueta, hover=False, activo=False,
               color_bg=None, color_txt=None):
+        """Botón con hover (elevación, glow y sombra)."""
         c = self.col
-        if color_bg is None:
-            color_bg = c["primario"] if activo else c["panel"]
-        if hover and not activo:
-            color_bg = tuple(min(255, v + 25) for v in color_bg)
+        col_primario = c["primario"]
         if color_txt is None:
             color_txt = c["texto"]
-        pygame.draw.rect(self.screen, color_bg, rect, border_radius=10)
-        pygame.draw.rect(self.screen, c["primario"] if not activo else c["texto"],
-                         rect, 2, border_radius=10)
+
+        # Sombra proyectada (siempre, más fuerte en hover)
+        offset_sombra = 6 if hover else 4
+        sombra = pygame.Surface((rect.w + 8, rect.h + offset_sombra + 4),
+                                pygame.SRCALPHA)
+        pygame.draw.rect(sombra, (0, 0, 0, 110),
+                         sombra.get_rect().inflate(-2, -2),
+                         border_radius=12)
+        self.screen.blit(sombra, (rect.x - 4, rect.y + offset_sombra - 2))
+
+        # Elevación visual: dibujamos el rect 2px arriba al hacer hover
+        r_dibujo = rect.move(0, -2) if hover else rect
+
+        # Glow trasero en hover
+        if hover and not activo:
+            glow = pygame.Surface((r_dibujo.w + 24, r_dibujo.h + 24),
+                                  pygame.SRCALPHA)
+            pygame.draw.rect(glow,
+                             (col_primario[0], col_primario[1], col_primario[2], 70),
+                             glow.get_rect(), border_radius=18)
+            self.screen.blit(glow, (r_dibujo.x - 12, r_dibujo.y - 12),
+                             special_flags=pygame.BLEND_RGBA_ADD)
+
+        # Fondo
+        if color_bg is None:
+            if activo:
+                color_bg = col_primario
+            elif hover:
+                color_bg = aclarar(c["panel"], 1.35)
+            else:
+                color_bg = c["panel"]
+
+        # Fondo semitransparente para sensación de cristal
+        fondo = pygame.Surface((r_dibujo.w, r_dibujo.h), pygame.SRCALPHA)
+        pygame.draw.rect(fondo, (*color_bg, 230), fondo.get_rect(),
+                         border_radius=12)
+        self.screen.blit(fondo, r_dibujo.topleft)
+
+        # Borde (más grueso/brillante en hover)
+        grosor_borde = 2 if hover or activo else 1
+        color_borde = c["texto"] if activo else col_primario
+        pygame.draw.rect(self.screen, color_borde, r_dibujo,
+                         grosor_borde, border_radius=12)
+
+        # Etiqueta
         fuente = self.fuentes["md"]
         r = fuente.render(etiqueta, True, color_txt)
-        self.screen.blit(r, r.get_rect(center=rect.center))
+        self.screen.blit(r, r.get_rect(center=r_dibujo.center))
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +219,12 @@ class Juego:
         self.opcion_hover = -1
         self.pantalla_anterior = "menu"   # a dónde volver desde 'ayuda'
 
+        # Efectos visuales
+        self.particulas = GestorParticulas()
+        self.transicion = Transicion()
+        self._gradiente_cache = {}   # (clave_paleta, w, h) -> Surface
+        self._t_anim = 0.0           # tiempo acumulado para animaciones
+
         # Ícono de ventana si está disponible
         ic = self.recursos.cargar("LinkUp_Logo") or self.recursos.cargar("icono_app")
         if ic:
@@ -159,9 +233,26 @@ class Juego:
             except pygame.error:
                 pass
 
+    def _gradiente_fondo(self):
+        """Devuelve el gradiente de fondo cacheado para la paleta actual."""
+        c = self.ui.col
+        clave = (self.ui.paleta_clave, settings.WIDTH, settings.HEIGHT)
+        if clave not in self._gradiente_cache:
+            self._gradiente_cache[clave] = crear_gradiente_cacheado(
+                settings.WIDTH, settings.HEIGHT, c["fondo"], c["fondo2"]
+            )
+        return self._gradiente_cache[clave]
+
+    def cambiar_pantalla(self, destino):
+        """Cambia de pantalla con fade. Usar en vez de self.pantalla = ..."""
+        def _aplicar(d):
+            self.pantalla = d
+        self.transicion.iniciar(destino, _aplicar)
+
     def correr(self):
         while True:
             dt = self.clock.tick(settings.FPS) / 1000.0
+            self._t_anim += dt
             eventos = pygame.event.get()
             for e in eventos:
                 if e.type == pygame.QUIT:
@@ -173,6 +264,7 @@ class Juego:
                 if e.type == pygame.KEYDOWN and e.key == pygame.K_F2:
                     nueva = "daltonico" if self.ui.paleta_clave == "normal" else "normal"
                     self.ui.cambiar_paleta(nueva)
+                    self._gradiente_cache.clear()
                     self.estado.msg(f"Paleta: {nueva}")
                 if e.type == pygame.KEYDOWN and e.key == pygame.K_F3:
                     actuales = list(settings.TAMANOS_FUENTE.keys())
@@ -201,6 +293,14 @@ class Juego:
             else:
                 self.pantalla = "menu"
 
+            # Capa de efectos GLOBALES (encima de la pantalla, debajo del fade)
+            self.particulas.update(dt)
+            self.particulas.dibujar(self.screen)
+
+            # Transición fade (siempre encima de todo)
+            self.transicion.update(dt)
+            self.transicion.dibujar(self.screen)
+
             pygame.display.flip()
 
     def salir(self):
@@ -216,13 +316,25 @@ class Juego:
 
     # ===================== UTILIDADES DE FONDO =====================
     def _dibujar_fondo(self, nombre_imagen, fallback_animado=True):
-        """Dibuja una imagen de fondo si existe; si no, anima puntos."""
+        """Dibuja una imagen de fondo si existe; si no, gradiente + puntos animados.
+        Encima de la imagen también pintamos un velo gradiente sutil para unificar
+        la estética cyber-neon y dar profundidad."""
+        c = self.ui.col
         fondo = self.recursos.fondo(nombre_imagen, settings.WIDTH, settings.HEIGHT)
         if fondo is not None:
             self.screen.blit(fondo, (0, 0))
+            # Velo gradiente para oscurecer abajo y resaltar UI
+            velo = pygame.Surface((settings.WIDTH, settings.HEIGHT),
+                                  pygame.SRCALPHA)
+            for y in range(settings.HEIGHT):
+                t = y / settings.HEIGHT
+                alpha = int(40 + 80 * t)  # más opaco abajo
+                pygame.draw.line(velo, (*c["fondo2"], alpha),
+                                 (0, y), (settings.WIDTH, y))
+            self.screen.blit(velo, (0, 0))
             return
-        c = self.ui.col
-        self.screen.fill(c["fondo"])
+        # Sin imagen: gradiente puro
+        self.screen.blit(self._gradiente_fondo(), (0, 0))
         if fallback_animado:
             t = time.time() * 0.3
             for i in range(40):
@@ -230,7 +342,8 @@ class Juego:
                 r = 200 + 60 * math.sin(t * 0.7 + i)
                 x = settings.WIDTH // 2 + math.cos(ang) * r
                 y = settings.HEIGHT // 2 + math.sin(ang) * r * 0.6
-                pygame.draw.circle(self.screen, c["fondo2"], (int(x), int(y)), 3)
+                pygame.draw.circle(self.screen, c["primario"],
+                                   (int(x), int(y)), 2)
 
     # ===================== MENÚ =====================
     def pantalla_menu(self, eventos):
@@ -540,7 +653,8 @@ class Juego:
         if g is None:
             return
 
-        # Aristas
+        # Aristas con paquetes de datos animados
+        t_anim = self._t_anim
         for u, adj in g.aristas.items():
             for v, info in adj.items():
                 if u >= v:
@@ -548,23 +662,46 @@ class Juego:
                 nu, nv = g.nodos[u], g.nodos[v]
                 color = c["arista"]
                 ancho = 2
+                animada = True
                 if info["muro"] and not info["rota"]:
-                    color = c["muro"]; ancho = 4
+                    color = c["muro"]; ancho = 4; animada = False
                 elif info["muro"] and info["rota"]:
                     color = c["exito"]; ancho = 2
-                pygame.draw.line(self.screen, color,
-                                 (nu.x, nu.y), (nv.x, nv.y), ancho)
+                pygame.draw.aaline(self.screen, color,
+                                   (nu.x, nu.y), (nv.x, nv.y))
+                if ancho > 2:
+                    pygame.draw.line(self.screen, color,
+                                     (nu.x, nu.y), (nv.x, nv.y), ancho)
+                # Paquetes de datos (puntos viajeros) — solo si no es muro intacto
+                if animada:
+                    self._dibujar_paquetes_arista(nu, nv, color, t_anim, u + v)
 
-        # Nodos
+        # Nodos con glow + pulso
         mouse = pygame.mouse.get_pos()
         nodo_hover = None
         for nodo in g.nodos.values():
-            radio = 30 if nodo.tipo == "central" else 24
-            pulse = 0
-            if nodo.estado == "infectado":
-                pulse = int(6 * abs(math.sin(time.time() * 4)))
+            radio_base = 30 if nodo.tipo == "central" else 24
+            extra_pulso = 0.0
 
-            tam = (radio + pulse) * 2
+            # Pulso en nodos importantes
+            if nodo.tipo == "central":
+                extra_pulso = pulso(velocidad=1.6, amplitud=3.5)
+            elif nodo.tipo == "bully" and nodo.estado != "resuelto":
+                extra_pulso = pulso(velocidad=2.4, amplitud=2.5)
+            elif nodo.estado == "infectado":
+                extra_pulso = abs(pulso(velocidad=4.0, amplitud=6.0))
+
+            radio = int(radio_base + extra_pulso)
+
+            # Glow (resplandor) según tipo y estado
+            color_glow = self._color_glow_nodo(nodo)
+            if color_glow is not None:
+                capas = 5 if nodo.tipo == "central" else 4
+                alpha = 90 if nodo.estado == "infectado" else 70
+                dibujar_glow(self.screen, int(nodo.x), int(nodo.y),
+                             radio, color_glow, capas=capas, alpha_base=alpha)
+
+            tam = radio * 2
             img = self.recursos.imagen_nodo(nodo.tipo, nodo.estado)
             if img:
                 img_esc = self.recursos.escalar(
@@ -573,9 +710,9 @@ class Juego:
                     rect = img_esc.get_rect(center=(int(nodo.x), int(nodo.y)))
                     self.screen.blit(img_esc, rect)
                 else:
-                    self._dibujar_nodo_fallback(nodo, radio + pulse)
+                    self._dibujar_nodo_fallback(nodo, radio)
             else:
-                self._dibujar_nodo_fallback(nodo, radio + pulse)
+                self._dibujar_nodo_fallback(nodo, radio)
 
             if nodo.estado == "resuelto":
                 pygame.draw.circle(self.screen, c["exito"],
@@ -664,6 +801,47 @@ class Juego:
             "central": c["nodo_central"],
         }
         return mapa.get(nodo.tipo, c["nodo_neutro"])
+
+    def _color_glow_nodo(self, nodo):
+        """Color del halo/glow del nodo. None si no queremos halo."""
+        c = self.ui.col
+        if nodo.estado == "resuelto":
+            return c["exito"]
+        if nodo.estado == "infectado":
+            return c["peligro"]
+        if nodo.tipo == "central":
+            return c["primario"]
+        if nodo.tipo == "bully":
+            return c["peligro"]
+        if nodo.tipo == "victima":
+            return c["alerta"]
+        if nodo.tipo == "aliado":
+            return c["exito"]
+        return None
+
+    def _dibujar_paquetes_arista(self, nu, nv, color, t, semilla):
+        """Dibuja 1-2 puntitos viajando por la arista (paquetes de datos).
+        Da sensación de red activa. Usa una semilla para que cada arista
+        tenga su propia fase y no parezca todo sincronizado."""
+        dx = nv.x - nu.x
+        dy = nv.y - nu.y
+        dist = math.hypot(dx, dy)
+        if dist < 30:
+            return
+        # Velocidad y fase
+        velocidad = 0.5
+        fase = (semilla * 0.137) % 1.0
+        # Hasta 2 paquetes desfasados
+        for k in range(2):
+            offset = (fase + k * 0.5 + t * velocidad) % 1.0
+            px = nu.x + dx * offset
+            py = nu.y + dy * offset
+            # Cuerpo brillante
+            s = pygame.Surface((10, 10), pygame.SRCALPHA)
+            pygame.draw.circle(s, (*color, 200), (5, 5), 3)
+            pygame.draw.circle(s, (*color, 90), (5, 5), 5)
+            self.screen.blit(s, (int(px - 5), int(py - 5)),
+                             special_flags=pygame.BLEND_RGBA_ADD)
 
     def _dibujar_hud(self, nodo_hover):
         c = self.ui.col
@@ -1060,6 +1238,7 @@ class Juego:
         self.estado.tiempo_actual = time.time()
         self._programar_eventos_iniciales()
         self.pantalla = "mapa"
+        self.transicion.fade_in()
         self.audio.play("nivel")
         self.estado.msg("¡Bienvenido, Guardián!", self.ui.col["primario"])
 
@@ -1147,7 +1326,8 @@ class Juego:
 
         if self.estado.salud_comunidad <= 0:
             self.estado.fin = True; self.estado.victoria = False
-            self.audio.play("fallo"); self.pantalla = "fin"; return
+            self.audio.play("fallo"); self.pantalla = "fin"
+            self.transicion.fade_in(); return
 
         nodos = list(self.estado.grafo.nodos.values())
         resueltos = sum(1 for n in nodos if n.estado == "resuelto")
@@ -1155,6 +1335,7 @@ class Juego:
         if resueltos >= max(1, int(len(nodos) * 0.7)) and central.estado != "infectado":
             self.estado.fin = True; self.estado.victoria = True
             self.audio.play("nivel"); self.pantalla = "fin"
+            self.transicion.fade_in()
 
     def _ejecutar_evento(self, dato):
         if dato["tipo"] == "propagar":
@@ -1172,9 +1353,14 @@ class Juego:
                             self.estado.situaciones[v] = crear_situacion("victima", vn.nombre)
                     vn.estado = "infectado"
                     self.estado.salud_comunidad -= 5
-                    self.estado.msg(f"El odio se propagó a {vn.nombre}",
+                    self.estado.msg(f"El odio se propago a {vn.nombre}",
                                     self.ui.col["peligro"])
                     self.audio.play("evento")
+                    # Burst de particulas rojas en el nodo infectado
+                    self.particulas.burst(vn.x, vn.y,
+                                          self.ui.col["peligro"],
+                                          cantidad=22, velocidad=140,
+                                          vida=0.9, tam=3)
                     self.estado.cola_eventos.push(
                         (self.estado.tiempo_actual - self.estado.tiempo_inicio) + random.uniform(15, 30),
                         {"tipo": "propagar", "nodo": v})
@@ -1185,7 +1371,7 @@ class Juego:
         if destino in g.vecinos(jl["pos"]) and g.arista_transitable(jl["pos"], destino):
             jl["pos"] = destino
             self.audio.play("mover")
-            self.estado.msg(f"{jl['nombre']} → {g.nodos[destino].nombre}")
+            self.estado.msg(f"{jl['nombre']} -> {g.nodos[destino].nombre}")
             nodo = g.nodos[destino]
             if (id_jug == self.estado.jugador_local
                     and nodo.estado != "resuelto"
@@ -1214,19 +1400,24 @@ class Juego:
             if nodo.tipo == "bully":
                 nodo.tipo = "aliado"
             self.estado.msg(f"{nodo.nombre} resuelto (+{pts})", self.ui.col["exito"])
+            # Burst de particulas verdes para celebrar la curacion
+            self.particulas.burst(nodo.x, nodo.y,
+                                  self.ui.col["exito"],
+                                  cantidad=26, velocidad=160,
+                                  vida=1.0, tam=3)
         else:
             self.estado.msg(f"Resultado: {pts:+d} pts, salud {salud:+d}",
                             self.ui.col["alerta"])
         if ef.get("poder"):
             poder = ef["poder"]
             jl["poderes"][poder] = jl["poderes"].get(poder, 0) + 1
-            self.estado.msg(f"¡Obtienes: {self._nombre_poder(poder)}!", self.ui.col["primario"])
+            self.estado.msg(f"Obtienes: {self._nombre_poder(poder)}!", self.ui.col["primario"])
             self.audio.play("poder")
         self._difundir_estado()
 
     def _nombre_poder(self, k):
         return {
-            "escudo_empatia":  "Escudo de Empatía",
+            "escudo_empatia":  "Escudo de Empatia",
             "red_apoyo":       "Red de Apoyo",
             "voz_amplificada": "Voz Amplificada",
         }.get(k, k)
@@ -1240,23 +1431,25 @@ class Juego:
         if muros and jl["poderes"].get("voz_amplificada", 0) > 0:
             g.romper_muro(pos, muros[0])
             jl["poderes"]["voz_amplificada"] -= 1
-            self.estado.msg("¡Muro roto con Voz Amplificada!", self.ui.col["exito"])
+            self.estado.msg("Muro roto con Voz Amplificada!", self.ui.col["exito"])
             self.audio.play("poder"); self._difundir_estado(); return
         nodo = g.nodos[pos]
         if nodo.tipo == "victima" and nodo.estado != "resuelto" and jl["poderes"].get("escudo_empatia", 0) > 0:
             nodo.estado = "resuelto"
             jl["poderes"]["escudo_empatia"] -= 1
             jl["puntos"] += 10
-            self.estado.msg("Escudo de Empatía: víctima protegida", self.ui.col["exito"])
+            self.estado.msg("Escudo de Empatia: victima protegida", self.ui.col["exito"])
+            self.particulas.burst(nodo.x, nodo.y, self.ui.col["exito"],
+                                  cantidad=24, velocidad=150, vida=1.0)
             self.audio.play("poder"); self._difundir_estado(); return
         if jl["poderes"].get("red_apoyo", 0) > 0 and len(g.vecinos(pos)) >= 2:
             v1, v2 = g.vecinos(pos)[:2]
             if v2 not in g.vecinos(v1):
                 g.agregar_arista(v1, v2)
                 jl["poderes"]["red_apoyo"] -= 1
-                self.estado.msg("Red de Apoyo: nueva conexión creada", self.ui.col["primario"])
+                self.estado.msg("Red de Apoyo: nueva conexion creada", self.ui.col["primario"])
                 self.audio.play("poder"); self._difundir_estado(); return
-        self.estado.msg("Sin poder aplicable aquí.", self.ui.col["alerta"])
+        self.estado.msg("Sin poder aplicable aqui.", self.ui.col["alerta"])
         self.audio.play("bloqueado")
 
     # ===================== RED =====================
