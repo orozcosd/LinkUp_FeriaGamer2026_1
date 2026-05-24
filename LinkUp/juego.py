@@ -34,10 +34,12 @@ _DIR_BASE = os.path.dirname(os.path.abspath(__file__))
 # UI
 # ---------------------------------------------------------------------------
 class UI:
-    def __init__(self, screen, paleta_clave="normal", tam_fuente="mediano"):
+    def __init__(self, screen, paleta_clave="normal", tam_fuente="mediano",
+                 recursos=None):
         self.screen = screen
         self.paleta_clave = paleta_clave
         self.tam_fuente = tam_fuente
+        self.recursos = recursos  # opcional: para botones con imagen
         self._cargar_fuentes()
 
     def _cargar_fuentes(self):
@@ -109,12 +111,39 @@ class UI:
         pygame.draw.rect(self.screen, color_borde, rect, 1, border_radius=radio)
 
     def boton(self, rect, etiqueta, hover=False, activo=False,
-              color_bg=None, color_txt=None):
-        """Botón con hover (elevación, glow y sombra)."""
+              color_bg=None, color_txt=None, clave_imagen=None,
+              dibujar_texto=None):
+        """Botón con hover (elevación, glow y sombra).
+
+        Si pasas `clave_imagen` (ej. "boton_jugar") y existe assets/<clave>.png,
+        se usa ese PNG como fondo del botón en vez del estilo glassmorphism.
+        El PNG se escala al tamaño del rect.
+
+        `dibujar_texto`:
+            None (defecto) → solo dibuja texto si NO se usa imagen específica
+                             (asume que la imagen ya trae texto baked-in).
+            True           → siempre dibuja texto encima.
+            False          → nunca dibuja texto."""
         c = self.col
         col_primario = c["primario"]
         if color_txt is None:
             color_txt = c["texto"]
+
+        # ¿Hay imagen disponible para este botón?
+        img_boton = None
+        if clave_imagen and self.recursos is not None:
+            # Prioridad: clave_imagen_hover > clave_imagen > genérico
+            if hover:
+                img_boton = self.recursos.escalar(
+                    clave_imagen + "_hover", rect.w, rect.h)
+            if img_boton is None:
+                img_boton = self.recursos.escalar(
+                    clave_imagen, rect.w, rect.h)
+            if img_boton is None:
+                # fallback a genéricos
+                nombre = "boton_hover" if hover else (
+                    "boton_activo" if activo else "boton_normal")
+                img_boton = self.recursos.escalar(nombre, rect.w, rect.h)
 
         # Sombra proyectada (siempre, más fuerte en hover)
         offset_sombra = 6 if hover else 4
@@ -128,41 +157,48 @@ class UI:
         # Elevación visual: dibujamos el rect 2px arriba al hacer hover
         r_dibujo = rect.move(0, -2) if hover else rect
 
-        # Glow trasero en hover
+        # Glow trasero en hover: suave, desaturado, sin blend aditivo
+        # (el blend aditivo es lo que lo hacía verse fluorescente).
         if hover and not activo:
-            glow = pygame.Surface((r_dibujo.w + 24, r_dibujo.h + 24),
+            # Color desaturado: mezcla del primario con blanco-gris para
+            # apagarlo. Alpha bajo para que apenas se note como aura.
+            r_g = int(col_primario[0] * 0.45 + 90)
+            g_g = int(col_primario[1] * 0.45 + 90)
+            b_g = int(col_primario[2] * 0.45 + 90)
+            glow = pygame.Surface((r_dibujo.w + 16, r_dibujo.h + 16),
                                   pygame.SRCALPHA)
-            pygame.draw.rect(glow,
-                             (col_primario[0], col_primario[1], col_primario[2], 70),
-                             glow.get_rect(), border_radius=18)
-            self.screen.blit(glow, (r_dibujo.x - 12, r_dibujo.y - 12),
-                             special_flags=pygame.BLEND_RGBA_ADD)
+            pygame.draw.rect(glow, (r_g, g_g, b_g, 35),
+                             glow.get_rect(), border_radius=14)
+            self.screen.blit(glow, (r_dibujo.x - 8, r_dibujo.y - 8))
 
-        # Fondo
-        if color_bg is None:
-            if activo:
-                color_bg = col_primario
-            elif hover:
-                color_bg = aclarar(c["panel"], 1.35)
-            else:
-                color_bg = c["panel"]
+        if img_boton is not None:
+            # Botón con imagen: la pintamos directamente
+            self.screen.blit(img_boton, r_dibujo.topleft)
+        else:
+            # Fallback glassmorphism
+            if color_bg is None:
+                if activo:
+                    color_bg = col_primario
+                elif hover:
+                    color_bg = aclarar(c["panel"], 1.35)
+                else:
+                    color_bg = c["panel"]
+            fondo = pygame.Surface((r_dibujo.w, r_dibujo.h), pygame.SRCALPHA)
+            pygame.draw.rect(fondo, (*color_bg, 230), fondo.get_rect(),
+                             border_radius=12)
+            self.screen.blit(fondo, r_dibujo.topleft)
+            grosor_borde = 2 if hover or activo else 1
+            color_borde = c["texto"] if activo else col_primario
+            pygame.draw.rect(self.screen, color_borde, r_dibujo,
+                             grosor_borde, border_radius=12)
 
-        # Fondo semitransparente para sensación de cristal
-        fondo = pygame.Surface((r_dibujo.w, r_dibujo.h), pygame.SRCALPHA)
-        pygame.draw.rect(fondo, (*color_bg, 230), fondo.get_rect(),
-                         border_radius=12)
-        self.screen.blit(fondo, r_dibujo.topleft)
-
-        # Borde (más grueso/brillante en hover)
-        grosor_borde = 2 if hover or activo else 1
-        color_borde = c["texto"] if activo else col_primario
-        pygame.draw.rect(self.screen, color_borde, r_dibujo,
-                         grosor_borde, border_radius=12)
-
-        # Etiqueta
-        fuente = self.fuentes["md"]
-        r = fuente.render(etiqueta, True, color_txt)
-        self.screen.blit(r, r.get_rect(center=r_dibujo.center))
+        # Etiqueta: si el botón usó imagen específica, asumimos que ya
+        # trae el texto y NO lo dibujamos encima. Solo se dibuja con fallback,
+        # o cuando el llamador fuerza dibujar_texto=True.
+        if dibujar_texto is True or (dibujar_texto is None and img_boton is None):
+            fuente = self.fuentes["md"]
+            r = fuente.render(etiqueta, True, color_txt)
+            self.screen.blit(r, r.get_rect(center=r_dibujo.center))
 
 
 # ---------------------------------------------------------------------------
@@ -201,9 +237,9 @@ class Juego:
         pygame.display.set_caption(settings.TITLE)
         self.screen = pygame.display.set_mode((settings.WIDTH, settings.HEIGHT))
         self.clock = pygame.time.Clock()
-        self.ui = UI(self.screen, "normal", "mediano")
         self.audio = GestorAudio()
         self.recursos = Recursos()
+        self.ui = UI(self.screen, "normal", "mediano", recursos=self.recursos)
         self.estado = EstadoJuego()
         self.pantalla = "menu"
         self.servidor = None
@@ -373,20 +409,20 @@ class Juego:
                       centrado=True, sombra=True)
 
         opciones = [
-            ("Jugar - Individual",       "individual"),
-            ("Hospedar partida (Host)",  "host"),
-            ("Unirse a partida",         "join"),
-            ("Configuración",            "config"),
-            ("Ayuda",                    "ayuda"),
-            ("Salir",                    "salir"),
+            ("Jugar - Individual",       "individual", "boton_individual"),
+            ("Hospedar partida (Host)",  "host",       "boton_host"),
+            ("Unirse a partida",         "join",       "boton_unirse"),
+            ("Configuración",            "config",     "boton_config"),
+            ("Ayuda",                    "ayuda",      "boton_ayuda"),
+            ("Salir",                    "salir",      "boton_salir"),
         ]
         x = settings.WIDTH // 2 - 180
         y0 = max(280, y_titulo + 40)
         mouse = pygame.mouse.get_pos()
-        for i, (txt, accion) in enumerate(opciones):
+        for i, (txt, accion, clave_img) in enumerate(opciones):
             rect = pygame.Rect(x, y0 + i * 58, 360, 46)
             hover = rect.collidepoint(mouse)
-            self.ui.boton(rect, txt, hover=hover)
+            self.ui.boton(rect, txt, hover=hover, clave_imagen=clave_img)
             for e in eventos:
                 if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 and rect.collidepoint(e.pos):
                     self.audio.play("click")
@@ -479,7 +515,8 @@ class Juego:
 
         rect_volver = pygame.Rect(80, settings.HEIGHT - 70, 200, 46)
         self.ui.boton(rect_volver, "← Volver",
-                      hover=rect_volver.collidepoint(mouse))
+                      hover=rect_volver.collidepoint(mouse),
+                      clave_imagen="boton_volver")
         for e in eventos:
             if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 and rect_volver.collidepoint(e.pos):
                 self.audio.play("click")
@@ -510,9 +547,9 @@ class Juego:
             "  · Víctima: necesita apoyo · Bully: acosador a transformar\n"
             "  · Aliado: puede unirse · Neutro: observador · Central: el corazón\n\n"
             "Estructuras de datos usadas:\n"
-            "  · GRAFO   → la red social\n"
-            "  · ÁRBOL   → árbol de decisiones de cada situación\n"
-            "  · COLA DE PRIORIDAD → orden de propagación del odio\n\n"
+            "  · GRAFO    la red social\n"
+            "  · ÁRBOL    árbol de decisiones de cada situación\n"
+            "  · COLA DE PRIORIDAD  orden de propagación del odio\n\n"
             "Inclusión: modo daltónico, texto ajustable, skins diversos,\n"
             "iconos + colores, contraste alto, audio descriptivo."
         )
@@ -522,7 +559,8 @@ class Juego:
                                   settings.HEIGHT - 70, 180, 46)
         mouse = pygame.mouse.get_pos()
         self.ui.boton(rect_volver, "Volver",
-                      hover=rect_volver.collidepoint(mouse))
+                      hover=rect_volver.collidepoint(mouse),
+                      clave_imagen="boton_volver")
         destino_volver = self.pantalla_anterior or "menu"
         for e in eventos:
             if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 and rect_volver.collidepoint(e.pos):
@@ -562,9 +600,11 @@ class Juego:
                                   settings.HEIGHT - 64, 200, 44)
         mouse = pygame.mouse.get_pos()
         self.ui.boton(rect_start, "Iniciar partida",
-                      hover=rect_start.collidepoint(mouse), activo=True)
+                      hover=rect_start.collidepoint(mouse), activo=True,
+                      clave_imagen="boton_iniciar")
         self.ui.boton(rect_cancel, "Cancelar",
-                      hover=rect_cancel.collidepoint(mouse))
+                      hover=rect_cancel.collidepoint(mouse),
+                      clave_imagen="boton_cancelar")
         for e in eventos:
             if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
                 if rect_start.collidepoint(e.pos):
@@ -591,10 +631,12 @@ class Juego:
         mouse = pygame.mouse.get_pos()
         rect_conn = pygame.Rect(settings.WIDTH // 2 - 120, 300, 240, 50)
         self.ui.boton(rect_conn, "Conectar",
-                      hover=rect_conn.collidepoint(mouse), activo=True)
+                      hover=rect_conn.collidepoint(mouse), activo=True,
+                      clave_imagen="boton_conectar")
         rect_back = pygame.Rect(80, settings.HEIGHT - 70, 200, 44)
         self.ui.boton(rect_back, "← Volver",
-                      hover=rect_back.collidepoint(mouse))
+                      hover=rect_back.collidepoint(mouse),
+                      clave_imagen="boton_volver")
 
         if self.cliente:
             self.cliente.procesar()
@@ -1025,35 +1067,41 @@ class Juego:
         # 1. Reanudar
         rect_resume = pygame.Rect(bx, by, bw, 50)
         self.ui.boton(rect_resume, "Reanudar partida",
-                      hover=rect_resume.collidepoint(mouse), activo=True)
+                      hover=rect_resume.collidepoint(mouse), activo=True,
+                      clave_imagen="boton_reanudar")
 
         # 2. Toggle paleta
         rect_paleta = pygame.Rect(bx, by + gap, bw, 50)
         nombre_paleta = "Normal" if self.ui.paleta_clave == "normal" else "Daltónico"
         self.ui.boton(rect_paleta, f"Modo color: {nombre_paleta}",
-                      hover=rect_paleta.collidepoint(mouse))
+                      hover=rect_paleta.collidepoint(mouse),
+                      clave_imagen="boton_modo_color")
 
         # 3. Cycle tamaño texto
         rect_texto = pygame.Rect(bx, by + gap * 2, bw, 50)
         nombre_tam = {"pequeno": "Pequeño", "mediano": "Mediano",
                       "grande": "Grande"}.get(self.ui.tam_fuente, "Mediano")
         self.ui.boton(rect_texto, f"Tamaño texto: {nombre_tam}",
-                      hover=rect_texto.collidepoint(mouse))
+                      hover=rect_texto.collidepoint(mouse),
+                      clave_imagen="boton_tam_text")
 
         # 4. Ayuda
         rect_ayuda = pygame.Rect(bx, by + gap * 3, bw, 50)
         self.ui.boton(rect_ayuda, "Ver ayuda / instrucciones",
-                      hover=rect_ayuda.collidepoint(mouse))
+                      hover=rect_ayuda.collidepoint(mouse),
+                      clave_imagen="boton_ayuda")
 
         # 5. Salir al menú principal
         rect_salir = pygame.Rect(bx, by + gap * 4, bw, 50)
         self.ui.boton(rect_salir, "Salir al menú principal",
-                      hover=rect_salir.collidepoint(mouse))
+                      hover=rect_salir.collidepoint(mouse),
+                      clave_imagen="boton_menu_principal")
 
         # 6. Salir del juego
         rect_quit = pygame.Rect(bx, by + gap * 5, bw, 50)
         self.ui.boton(rect_quit, "Salir del juego",
-                      hover=rect_quit.collidepoint(mouse))
+                      hover=rect_quit.collidepoint(mouse),
+                      clave_imagen="boton_salir")
 
         # Hint inferior
         self.ui.texto("Pulsa ESC para reanudar", "xs", c["texto_sec"],
@@ -1136,7 +1184,8 @@ class Juego:
             rect_cont = pygame.Rect(panel.right - 250, panel.bottom - 80, 220, 50)
             mouse = pygame.mouse.get_pos()
             self.ui.boton(rect_cont, "Continuar",
-                          hover=rect_cont.collidepoint(mouse), activo=True)
+                          hover=rect_cont.collidepoint(mouse), activo=True,
+                          clave_imagen="boton_continuar")
             for e in eventos:
                 if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 and rect_cont.collidepoint(e.pos):
                     self._aplicar_efecto_hoja(nodo, arbol.actual)
@@ -1162,7 +1211,8 @@ class Juego:
                         arbol.elegir(idx); self.audio.play("click")
 
         rect_back = pygame.Rect(panel.x + 30, panel.bottom - 70, 180, 46)
-        self.ui.boton(rect_back, "Salir", hover=rect_back.collidepoint(mouse))
+        self.ui.boton(rect_back, "Salir", hover=rect_back.collidepoint(mouse),
+                      clave_imagen="boton_volver")
         for e in eventos:
             if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 and rect_back.collidepoint(e.pos):
                 self.pantalla = "mapa"
@@ -1201,9 +1251,11 @@ class Juego:
         rect_menu = pygame.Rect(settings.WIDTH // 2 + 20, settings.HEIGHT - 110, 200, 56)
         mouse = pygame.mouse.get_pos()
         self.ui.boton(rect_re, "Jugar otra vez",
-                      hover=rect_re.collidepoint(mouse), activo=True)
+                      hover=rect_re.collidepoint(mouse), activo=True,
+                      clave_imagen="boton_jugar_otra")
         self.ui.boton(rect_menu, "Menú principal",
-                      hover=rect_menu.collidepoint(mouse))
+                      hover=rect_menu.collidepoint(mouse),
+                      clave_imagen="boton_menu_principal")
         for e in eventos:
             if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
                 if rect_re.collidepoint(e.pos):
