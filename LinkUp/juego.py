@@ -403,7 +403,13 @@ class Juego:
         # ---- INICIALIZACION DE PYGAME ----
         pygame.init()
         pygame.display.set_caption(settings.TITLE)
-        self.screen = pygame.display.set_mode((settings.WIDTH, settings.HEIGHT))
+        # ---- VENTANA REDIMENSIONABLE ----
+        # El flag pygame.RESIZABLE permite que el usuario arrastre la
+        # esquina/borde de la ventana para agrandarla o achicarla.
+        # Cuando lo hace, pygame emite un evento VIDEORESIZE que
+        # manejamos en el loop principal (ver _redimensionar).
+        self.screen = pygame.display.set_mode(
+            (settings.WIDTH, settings.HEIGHT), pygame.RESIZABLE)
         # Clock controla la velocidad del loop (60 FPS objetivo).
         self.clock = pygame.time.Clock()
 
@@ -488,6 +494,13 @@ class Juego:
                 if e.type == pygame.QUIT:
                     # Usuario cerro la ventana.
                     self.salir()
+                # VIDEORESIZE: el usuario arrastro la esquina/borde para
+                # cambiar el tamano de la ventana. Reaccionamos
+                # actualizando settings.WIDTH/HEIGHT (que se leen en
+                # todos lados) y reescalando posiciones de los nodos
+                # si hay una partida en curso.
+                if e.type == pygame.VIDEORESIZE:
+                    self._redimensionar(e.w, e.h)
                 # F1: abrir pantalla de ayuda (recordamos a donde volver)
                 if e.type == pygame.KEYDOWN and e.key == pygame.K_F1:
                     if self.pantalla != "ayuda":
@@ -544,6 +557,75 @@ class Juego:
 
             # flip() copia el buffer al display fisico (double-buffering).
             pygame.display.flip()
+
+    def _redimensionar(self, nuevo_w, nuevo_h):
+        """Reacciona al evento VIDEORESIZE.
+
+        Pasos que hacemos cuando cambia el tamano de la ventana:
+          1) Clampeamos al minimo (settings.MIN_WIDTH/MIN_HEIGHT) para
+             que la UI no se rompa si el usuario hace la ventana muy
+             chica.
+          2) Calculamos los factores de escala (sx, sy) en base al
+             tamano anterior. Los necesitamos para reposicionar los
+             nodos del grafo proporcionalmente.
+          3) Mutamos settings.WIDTH/HEIGHT. Como en el codigo siempre
+             leemos `settings.WIDTH` (no una copia local), todos los
+             modulos ven los nuevos valores automaticamente.
+          4) Recreamos la Surface del display con el nuevo tamano.
+             pygame.display.set_mode() es la unica forma de cambiar
+             el tamano del buffer subyacente.
+          5) Actualizamos `self.ui.screen` para que la UI dibuje en
+             la nueva Surface.
+          6) Limpiamos el cache de gradientes (esta keyeado por tamano,
+             asi que las entradas viejas son inutiles y desperdician
+             memoria).
+          7) Si hay una partida en curso, reescalamos las posiciones
+             de los nodos del grafo proporcionalmente para que no
+             queden todos amontonados en la esquina superior izquierda
+             cuando agrandemos, o saliendo de pantalla cuando achiquemos.
+        """
+        # 1) Clamp al minimo permitido.
+        nuevo_w = max(nuevo_w, settings.MIN_WIDTH)
+        nuevo_h = max(nuevo_h, settings.MIN_HEIGHT)
+
+        # 2) Factor de escala basado en el tamano ANTERIOR. Lo usamos
+        # mas abajo para reposicionar nodos. Ojo: no se puede hacer
+        # despues de mutar settings, por eso lo guardamos ahora.
+        sx = nuevo_w / settings.WIDTH
+        sy = nuevo_h / settings.HEIGHT
+
+        # 3) Mutamos los valores globales. settings es un modulo, y
+        # WIDTH/HEIGHT son atributos a nivel de modulo. Cualquier
+        # `settings.WIDTH` que se evalue despues vera el nuevo valor.
+        settings.WIDTH = nuevo_w
+        settings.HEIGHT = nuevo_h
+
+        # 4) Recreamos la Surface del display con el flag RESIZABLE
+        # (no perderlo, sino la ventana deja de ser redimensionable
+        # despues del primer resize).
+        self.screen = pygame.display.set_mode(
+            (nuevo_w, nuevo_h), pygame.RESIZABLE)
+
+        # 5) Actualizamos la referencia que la UI tiene del screen.
+        # Si no lo hicieramos, la UI seguiria dibujando en la Surface
+        # vieja y los textos/paneles no apareceria en pantalla.
+        self.ui.screen = self.screen
+
+        # 6) Limpiamos el cache de gradientes (su clave es (paleta, w, h),
+        # entonces las entradas viejas ya no se van a usar).
+        self._gradiente_cache.clear()
+
+        # 7) Reescalar nodos del grafo si hay una partida activa.
+        # Si no hay grafo (estamos en el menu, lobby, etc), no
+        # hace nada.
+        try:
+            grafo = self.estado.grafo
+        except AttributeError:
+            grafo = None
+        if grafo is not None and hasattr(grafo, "nodos"):
+            for nodo in grafo.nodos.values():
+                nodo.x *= sx
+                nodo.y *= sy
 
     def salir(self):
         """Cierre limpio: detiene servidor, cliente, pygame, y termina."""
@@ -2028,7 +2110,7 @@ class Juego:
         Solo incluye lo que los clientes necesitan saber para dibujar
         y entender el juego (no enviamos cosas como las situaciones
         completas porque pesan mucho y el cliente no necesita el arbol
-        — el servidor maneja las decisiones).
+        - el servidor maneja las decisiones).
         """
         g = self.estado.grafo
         return {
@@ -2059,7 +2141,7 @@ class Juego:
         reconstruimos nuestro estado local.
 
         Esto se llama cada vez que recibimos un ESTADO del servidor.
-        Es una sincronizacion completa (no incremental) — simple y robusta.
+        Es una sincronizacion completa (no incremental) - simple y robusta.
         """
         s = self.cliente.estado_juego
         if not s:

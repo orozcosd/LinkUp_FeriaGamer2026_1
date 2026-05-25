@@ -17,10 +17,20 @@ bucear en el codigo. Tambien facilita hacer un "modo dificil" o
 # --------------------------------------------------------------------
 # DIMENSIONES DE LA VENTANA
 # --------------------------------------------------------------------
-# Resolucion fija de 1280x720 (HD): se ve bien en cualquier monitor
+# Resolucion INICIAL de 1280x720 (HD): se ve bien en cualquier monitor
 # moderno y es proporcion 16:9 estandar.
+#
+# La ventana ahora es REDIMENSIONABLE: el usuario puede arrastrar la
+# esquina para agrandarla o achicarla. En tiempo de ejecucion, los
+# valores WIDTH/HEIGHT se MUTAN para reflejar el tamano actual de la
+# ventana (vease pygame.VIDEORESIZE en juego.py).
 WIDTH = 1280
 HEIGHT = 720
+# Tamano MINIMO al que se puede achicar la ventana. Por debajo de esto
+# la UI empieza a romperse (paneles que no caben, HUD sobre el mapa,
+# etc), asi que rechazamos cambios mas chicos.
+MIN_WIDTH = 900
+MIN_HEIGHT = 600
 # Frames por segundo objetivo. 60 es el estandar para que se sienta
 # fluido sin gastar bateria de mas.
 FPS = 60
