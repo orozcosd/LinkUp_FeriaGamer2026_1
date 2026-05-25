@@ -47,6 +47,16 @@ import time
 
 import pygame
 
+# Numpy es opcional: si esta instalado, podemos aplicar el filtro
+# daltonico global (post-procesamiento que tiñe toda la pantalla,
+# incluyendo imagenes, para mantener la paleta accesible coherente).
+# Si no esta instalado, el modo daltonico solo cambia la paleta de UI.
+try:
+    import numpy as _np
+    _NUMPY_OK = True
+except ImportError:
+    _NUMPY_OK = False
+
 import settings
 from estructuras import Grafo, ArbolDecisiones, ColaPrioridad, Nodo
 from situaciones import crear_situacion, nombre_aleatorio
@@ -67,6 +77,31 @@ from efectos import (
 # Lo usamos para construir rutas absolutas a fuentes/assets de forma
 # robusta sin importar desde donde se lance python.
 _DIR_BASE = os.path.dirname(os.path.abspath(__file__))
+
+
+# ===========================================================================
+# MATRIZ DE FILTRO DALTONICO (post-procesamiento)
+# ===========================================================================
+# Esta matriz se aplica pixel-por-pixel sobre toda la pantalla cuando el
+# modo daltonico esta activo. Transforma los colores asi:
+#   - El rojo (255,0,0) se vuelve naranja (sube canal verde junto al rojo)
+#   - El verde (0,255,0) se vuelve cyan-azulado (sube canal azul junto al verde)
+#   - El azul (0,0,255) se mantiene
+# Resultado: rojo y verde dejan de confundirse para personas con
+# deuteranopia/protanopia, y el efecto se aplica TAMBIEN a imagenes
+# (no solo a colores programaticos de la paleta).
+#
+# La matriz se multiplica por cada vector (R, G, B) del frame final
+# antes de mostrarlo en pantalla. Se usa numpy para eficiencia
+# (matmul vectorizado sobre ~1M pixeles en pocos milisegundos).
+_MATRIZ_DALTONIZE = (
+    _np.array([
+        [1.00, 0.00, 0.00],   # R' = 1.0 * R         (rojo se mantiene)
+        [0.50, 0.70, 0.00],   # G' = 0.5R + 0.7G     (rojo + verde -> naranja)
+        [0.00, 0.40, 1.00],   # B' = 0.4G + 1.0B     (verde + azul -> cyan)
+    ], dtype=_np.float32)
+    if _NUMPY_OK else None
+)
 
 
 # ===========================================================================
@@ -555,8 +590,69 @@ class Juego:
             self.transicion.update(dt)
             self.transicion.dibujar(self.screen)
 
+            # ---- FILTRO DALTONICO (post-procesamiento) ----
+            # Solo si el modo daltonico esta activo. Esto transforma
+            # TODOS los pixeles del frame (incluyendo imagenes) para
+            # mantener una paleta accesible consistente.
+            if self.ui.paleta_clave == "daltonico":
+                self._aplicar_filtro_daltonico()
+
             # flip() copia el buffer al display fisico (double-buffering).
             pygame.display.flip()
+
+    def _aplicar_filtro_daltonico(self):
+        """Aplica el filtro daltonico sobre TODA la pantalla del frame actual.
+
+        Cuando el modo daltonico esta activo (F2 o desde el menu de pausa),
+        llamamos a este metodo justo antes de pygame.display.flip(). El
+        filtro hace una transformacion de color pixel-por-pixel sobre el
+        framebuffer, asi que afecta:
+
+          - Gradientes y rellenos dibujados con pygame.draw
+          - Paneles glassmorphism y texto
+          - IMAGENES (PNGs de nodos, botones, fondos, avatares)
+
+        Esto resuelve la inconsistencia visual previa: antes el modo
+        daltonico solo cambiaba la paleta de UI, pero las imagenes
+        cargadas como bitmaps mantenian sus colores rojo/verde
+        originales. Ahora todo se transforma uniformemente.
+
+        Implementacion:
+          1. pygame.surfarray.pixels3d() devuelve una VISTA del buffer
+             (sin copiar la memoria). Esto lockea la surface.
+          2. La aplanamos a (N, 3) para poder aplicar la matriz a
+             todos los pixeles a la vez con un solo matmul de numpy.
+          3. Clamp a [0, 255] y volver a uint8.
+          4. Copiar de vuelta al buffer original con arr[:] (mantiene
+             el lock; lo soltamos con `del arr` al final).
+
+        Si numpy no esta instalado, el filtro se omite silenciosamente
+        — el juego sigue funcionando, solo que las imagenes no recibiran
+        el shift de color (caemos al comportamiento viejo).
+        """
+        if not _NUMPY_OK:
+            return
+        try:
+            # pixels3d puede fallar si la surface no es accesible
+            # como array (por ejemplo si esta en otro proceso o
+            # comprimida). En ese caso simplemente no aplicamos filtro.
+            arr = pygame.surfarray.pixels3d(self.screen)
+        except (pygame.error, ValueError):
+            return
+        forma = arr.shape
+        # Aplanar a (N_pixeles, 3) y promover a float para no perder
+        # precision al multiplicar (uint8 desbordaria muy facil).
+        pix = arr.reshape(-1, 3).astype(_np.float32)
+        # Producto matricial: cada pixel pasa por la matriz daltonica.
+        # @ es el operador matmul de numpy (equivalente a np.dot).
+        nuevo = pix @ _MATRIZ_DALTONIZE.T
+        # Clamp para evitar overflow al volver a uint8.
+        _np.clip(nuevo, 0, 255, out=nuevo)
+        # Volcar de regreso al buffer manteniendo la referencia (arr[:]
+        # mantiene el lock; no usar `arr = ...` porque rompe la vista).
+        arr[:] = nuevo.reshape(forma).astype(_np.uint8)
+        # Liberar el lock soltando la referencia local.
+        del arr
 
     def _redimensionar(self, nuevo_w, nuevo_h):
         """Reacciona al evento VIDEORESIZE.
