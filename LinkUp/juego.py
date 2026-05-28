@@ -1920,9 +1920,31 @@ class Juego:
         for e in eventos:
             if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
                 if rect_re.collidepoint(e.pos):
-                    self.audio.play("click"); self._iniciar_partida_local()
+                    self.audio.play("click")
+                    # En multijugador, el host debe usar la version
+                    # multijugador para que los invitados se enteren
+                    # del nuevo grafo y salgan de pantalla_fin.
+                    if self.servidor is not None:
+                        self._iniciar_partida_multijugador()
+                    elif self.cliente is not None:
+                        # Cliente: no puede reiniciar solo. Le mostramos
+                        # un mensaje sin hacer nada — debe esperar al host.
+                        self.estado.msg("Espera a que el host reinicie.",
+                                        self.ui.col["alerta"])
+                    else:
+                        self._iniciar_partida_local()
                 elif rect_menu.collidepoint(e.pos):
-                    self.audio.play("click"); self.pantalla = "menu"
+                    self.audio.play("click")
+                    # Cerrar conexiones de red al volver al menu.
+                    if self.servidor:
+                        try: self.servidor.detener()
+                        except Exception: pass
+                        self.servidor = None
+                    if self.cliente:
+                        try: self.cliente.desconectar()
+                        except Exception: pass
+                        self.cliente = None
+                    self.pantalla = "menu"
 
     # ===================== LOGICA DE PARTIDA =====================
     def _iniciar_partida_local(self):
@@ -2518,7 +2540,21 @@ class Juego:
             self.estado.jugador_local = self.cliente.id_jugador + 1
             if self.estado.jugador_local >= len(self.estado.jugadores):
                 self.estado.jugador_local = 0
+        # Si el server reinicio la partida (estamos en "fin" pero el
+        # snapshot ya dice fin=False), eso significa que el host hizo
+        # click en "Jugar otra vez". Volver al mapa con fade-in y
+        # limpiar el estado local de UI del cliente.
+        if self.pantalla == "fin" and not s.get("fin"):
+            self.pantalla = "mapa"
+            self.transicion.fade_in()
+            self.nodo_evento_actual = None
+            self.ruta_decision = []
+            self._pos_jugador_anterior = -1
+            self.estado.msg("Nueva partida!", self.ui.col["primario"])
         self.estado.salud_comunidad = s["salud"]
+        # Reflejar fin/victoria desde el server.
+        self.estado.fin = bool(s.get("fin", False))
+        self.estado.victoria = bool(s.get("victoria", False))
         # Deserializar las situaciones que el servidor nos envio. Asi
         # podemos abrir nuestra propia pantalla de evento cuando caigamos
         # en un nodo con conflicto.
@@ -2567,7 +2603,7 @@ class Juego:
             # cliente puede hacer click en su nodo para abrir manualmente.
             pass
         # Si el servidor marca fin de partida, vamos a la pantalla de fin.
-        if s.get("fin"):
-            self.estado.fin = True
-            self.estado.victoria = s.get("victoria", False)
+        # (Los flags fin/victoria ya se setearon arriba al sincronizar
+        # salud — aqui solo cambiamos la pantalla.)
+        if s.get("fin") and self.pantalla != "fin":
             self.pantalla = "fin"
