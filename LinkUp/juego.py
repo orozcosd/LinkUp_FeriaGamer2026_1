@@ -1784,8 +1784,33 @@ class Juego:
     # ===================== PANTALLA: EVENTO (decision) =====================
     def pantalla_evento(self, eventos):
         """Pantalla del arbol de decisiones cuando entras a un nodo
-        con conflicto. Muestra el texto de la situacion y las opciones."""
+        con conflicto. Muestra el texto de la situacion y las opciones.
+
+        IMPORTANTE: procesamos mensajes de red AQUI tambien (no solo en
+        pantalla_mapa). Sin esto, mientras el host o un cliente esta en
+        evento, las acciones de los otros jugadores se acumulan sin
+        procesar — el lock no se chequea, los movimientos quedan
+        pendientes, etc. Procesar red en cada pantalla relevante mantiene
+        el multijugador fluido.
+        """
         c = self.ui.col
+        # ---- PROCESAMIENTO DE RED (critico para multijugador) ----
+        # Si soy host: procesar acciones de clientes y actualizar lista
+        # de conectados.
+        if self.servidor:
+            self.servidor.procesar()
+            self._sincronizar_jugadores_conectados()
+            self._procesar_acciones_servidor()
+        # Si soy cliente: leer snapshots del servidor. Esto puede cerrar
+        # esta misma pantalla si descubrimos que el lock no era nuestro.
+        if self.cliente:
+            self.cliente.procesar()
+            if self.cliente.estado_juego:
+                self._sincronizar_desde_servidor()
+            # Si la sync nos saco de evento (porque el lock cambio o la
+            # partida terminó), salir limpio.
+            if self.pantalla != "evento":
+                return
         # Si existe un fondo especifico de evento, lo usamos; sino menu.
         self._dibujar_fondo("fondo_evento" if self.recursos.cargar("fondo_evento") else "fondo_menu")
         nodo = self.nodo_evento_actual
@@ -2296,6 +2321,21 @@ class Juego:
         """
         if id_jugador is None:
             id_jugador = self.estado.jugador_local
+        # Guardia: indice invalido (jugador desconectado, etc).
+        if id_jugador < 0 or id_jugador >= len(self.estado.jugadores):
+            return
+        # ---- VALIDACION DE LOCK (defensiva) ----
+        # En multijugador, solo aplicar efecto si el jugador es el
+        # duenio del lock para ese nodo. Esto previene aplicar dos
+        # veces el mismo efecto cuando llegan acciones duplicadas o
+        # cuando un cliente envia decidir despues de perder el lock.
+        if self.estado.modo in ("servidor", "cliente"):
+            mi_jug_id = self.estado.jugadores[id_jugador]["id"]
+            duenio = self.estado.situaciones_en_uso.get(nodo.id)
+            if duenio is not None and duenio != mi_jug_id:
+                # Lock no es nuestro: no aplicar (otro jugador ya lo
+                # estaba salvando o ya lo aplico).
+                return
         jl = self.estado.jugadores[id_jugador]
         ef = hoja.efecto or {}
         pts = ef.get("puntos", 0)
@@ -2407,6 +2447,18 @@ class Juego:
                 # y aplicamos el efecto al jugador correspondiente.
                 nodo_id = int(datos.get("nodo", -1))
                 ruta = datos.get("ruta", []) or []
+                # ---- VALIDACION DE LOCK (critica para evitar el bug
+                # de dos jugadores salvando el mismo nodo) ----
+                # Solo aplicamos el efecto si este cliente realmente
+                # tiene reservado el lock de ese nodo. Si no lo tiene
+                # (porque otro jugador se le adelanto), rechazamos la
+                # decision silenciosamente. El cliente eventualmente
+                # vera por sync que su evento fue cancelado.
+                mi_jug_id = self.estado.jugadores[idx]["id"]
+                duenio_lock = self.estado.situaciones_en_uso.get(nodo_id)
+                if duenio_lock is not None and duenio_lock != mi_jug_id:
+                    # Lock no es de este cliente - rechazar.
+                    continue
                 if (nodo_id in self.estado.situaciones
                         and nodo_id in self.estado.grafo.nodos):
                     arbol = self.estado.situaciones[nodo_id]
@@ -2558,9 +2610,27 @@ class Juego:
         # Deserializar las situaciones que el servidor nos envio. Asi
         # podemos abrir nuestra propia pantalla de evento cuando caigamos
         # en un nodo con conflicto.
+        #
+        # IMPORTANTE: si estoy en pantalla_evento navegando un arbol,
+        # PRESERVAR ese arbol (con su `actual` apuntando a donde voy
+        # en la navegacion). Sin esto, la sync re-deserializa todo y
+        # `actual` vuelve a la raiz — el jugador pierde su progreso
+        # y la pantalla se rompe.
         sit_data = s.get("situaciones", {})
         if sit_data:
+            # Guardar referencia al arbol que estoy navegando ahora,
+            # si estoy en evento.
+            nodo_evento_id = None
+            arbol_preservar = None
+            if (self.pantalla == "evento"
+                    and self.nodo_evento_actual is not None):
+                nodo_evento_id = self.nodo_evento_actual.id
+                arbol_preservar = self.estado.situaciones.get(nodo_evento_id)
+            # Re-deserializar todo el dict.
             self.estado.situaciones = _deserializar_situaciones(sit_data)
+            # Restaurar el arbol que estaba siendo navegado.
+            if arbol_preservar is not None and nodo_evento_id is not None:
+                self.estado.situaciones[nodo_evento_id] = arbol_preservar
         # Deserializar los locks de situaciones en uso. Las claves vienen
         # como strings (limitacion JSON), las convertimos a int.
         en_uso_data = s.get("situaciones_en_uso", {}) or {}
@@ -2575,12 +2645,22 @@ class Juego:
                 and self.estado.jugadores
                 and 0 <= self.estado.jugador_local < len(self.estado.jugadores)):
             mi_id = self.estado.jugadores[self.estado.jugador_local]["id"]
-            lock = self.estado.situaciones_en_uso.get(
-                self.nodo_evento_actual.id)
+            nodo_evt = self.nodo_evento_actual
+            lock = self.estado.situaciones_en_uso.get(nodo_evt.id)
+            # Caso 1: lock no es mio.
             if lock is not None and lock != mi_id:
                 self.estado.msg("Otro jugador esta salvando ese nodo.",
                                 self.ui.col["alerta"])
                 self.ruta_decision = []
+                self.nodo_evento_actual = None
+                self.pantalla = "mapa"
+            # Caso 2: el nodo ya fue resuelto (otro lo termino).
+            elif (nodo_evt.id in self.estado.grafo.nodos
+                    and self.estado.grafo.nodos[nodo_evt.id].estado == "resuelto"):
+                self.estado.msg("Ese nodo ya fue resuelto.",
+                                self.ui.col["alerta"])
+                self.ruta_decision = []
+                self.nodo_evento_actual = None
                 self.pantalla = "mapa"
         # Auto-abrir situacion si acabamos de cambiar de posicion y
         # estamos parados sobre un nodo con conflicto no resuelto. Sin

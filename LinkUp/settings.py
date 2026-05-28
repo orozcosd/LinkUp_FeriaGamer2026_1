@@ -201,3 +201,14 @@ PUNTOS_NEUTRALIZAR = 25
 PUNTOS_PUENTE = 10
 # Penalizacion por accion equivocada (numero negativo).
 PENALIZACION_ERROR = -10
+
+# --------------------------------------------------------------------
+# SALUD DE LA COMUNIDAD y SISTEMA DE PUNTUACION
+# --------------------------------------------------------------------
+# Salud inicial de la red social. Si llega a 0 se pierde la partida.
+SALUD_COMUNIDAD_INICIAL = 100
+# Puntos por accion (no usados directamente pero referenciables).
+PUNTOS_AYUDA       = 15   # ayudar a una victima
+PUNTOS_NEUTRALIZAR = 25   # neutralizar a un bully
+PUNTOS_PUENTE      = 10   # reconectar componente aislado
+PENALIZACION_ERROR = -10  # decision incorrecta
