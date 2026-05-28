@@ -2144,7 +2144,13 @@ class Juego:
             # Derrota: la comunidad colapso.
             self.estado.fin = True; self.estado.victoria = False
             self.audio.play("fallo"); self.pantalla = "fin"
-            self.transicion.fade_in(); return
+            self.transicion.fade_in()
+            # CRITICO: difundir el estado para que los clientes sepan
+            # que termino el juego. Sin esto los clientes se quedaban
+            # con el ultimo snapshot (sin fin=True) y no pasaban a
+            # pantalla_fin, quedandose con pantalla en negro/colgada.
+            self._difundir_estado()
+            return
 
         # Victoria: 70%+ de los nodos resueltos Y el central no infectado.
         nodos = list(self.estado.grafo.nodos.values())
@@ -2154,6 +2160,8 @@ class Juego:
             self.estado.fin = True; self.estado.victoria = True
             self.audio.play("nivel"); self.pantalla = "fin"
             self.transicion.fade_in()
+            # CRITICO: difundir el estado al cliente (ver comentario arriba).
+            self._difundir_estado()
 
     def _ejecutar_evento(self, dato):
         """Aplica un evento extraido de la cola de prioridad.
@@ -2391,7 +2399,19 @@ class Juego:
           2) Escudo de Empatia: si estoy en una victima activa, protegerla
           3) Red de Apoyo: si tengo 2+ vecinos no conectados entre si,
                            crear una arista nueva entre ellos
+
+        En modo CLIENTE no aplicamos cambios localmente — enviamos una
+        accion "poder" al servidor y el server decide. Sin esto, el
+        cliente modificaba su copia local del grafo y el siguiente
+        snapshot del server la sobreescribia, pareciera que el poder
+        no funciona.
         """
+        # ---- CLIENTE: enviar accion al servidor ----
+        if self.estado.modo == "cliente" and self.cliente is not None:
+            self.cliente.enviar_accion("poder", {})
+            # Feedback inmediato local (sin modificar el grafo).
+            self.audio.play("click")
+            return
         jl = self.estado.jugadores[self.estado.jugador_local]
         g = self.estado.grafo
         pos = jl["pos"]
@@ -2501,6 +2521,19 @@ class Juego:
                     if self.estado.situaciones_en_uso.get(nodo_id) == mi_jug_id:
                         self.estado.situaciones_en_uso.pop(nodo_id, None)
                         self._difundir_estado()
+            elif ac == "poder":
+                # Cliente quiere usar un poder. Aplicamos la misma logica
+                # de _usar_poder pero con el jugador_local apuntado al
+                # cliente. Hacemos swap temporal y restauramos.
+                if idx < len(self.estado.jugadores):
+                    orig_local = self.estado.jugador_local
+                    self.estado.jugador_local = idx
+                    try:
+                        # Llamada local (no entra en la rama cliente
+                        # porque para el server modo == "servidor").
+                        self._usar_poder()
+                    finally:
+                        self.estado.jugador_local = orig_local
         # Vaciamos la cola para no procesar dos veces.
         self.servidor.acciones_pendientes.clear()
 
