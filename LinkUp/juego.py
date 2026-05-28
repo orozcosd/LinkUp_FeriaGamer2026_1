@@ -105,6 +105,81 @@ _MATRIZ_DALTONIZE = (
 
 
 # ===========================================================================
+# SERIALIZACION DE ARBOLES DE DECISIONES PARA MULTIJUGADOR
+# ===========================================================================
+# Los clientes necesitan ver los mismos arboles de decisiones que el
+# servidor. Sin esto, el invitado nunca veria opciones para salvar
+# nodos (el bug que el usuario reporto). El servidor crea los arboles
+# localmente con crear_situacion(), los serializa como dicts JSON, y
+# los envia dentro del snapshot de ESTADO en cada difusion.
+#
+# El cliente deserializa de vuelta a NodoArbol/ArbolDecisiones cuando
+# recibe el estado. Asi puede abrir su propia pantalla de evento,
+# navegar el arbol localmente, y enviar la decision final como una
+# accion "decidir" al servidor con la ruta de indices tomados.
+#
+# Los arboles son inmutables (no cambian durante la partida — solo
+# cambia el cursor `arbol.actual` mientras navegas), asi que enviarlos
+# en cada snapshot es redundante pero simple. JSON+LAN es barato
+# (~30KB por snapshot, irrelevante en red local).
+from estructuras import NodoArbol, ArbolDecisiones
+
+
+def _serializar_nodo_arbol(nodo):
+    """NodoArbol -> dict JSON-serializable.
+
+    Recursivo: cada hijo en `opciones` se serializa tambien. Las hojas
+    (sin opciones) terminan la recursion porque `nodo.opciones == []`.
+    """
+    return {
+        "texto": nodo.texto,
+        "terminal": nodo.terminal,
+        "tipo_resultado": nodo.tipo_resultado,
+        "efecto": nodo.efecto,
+        "opciones": [
+            [texto_op, _serializar_nodo_arbol(hijo), efecto]
+            for texto_op, hijo, efecto in nodo.opciones
+        ],
+    }
+
+
+def _deserializar_nodo_arbol(d):
+    """dict -> NodoArbol. Inverso de _serializar_nodo_arbol."""
+    n = NodoArbol(
+        d["texto"],
+        terminal=d.get("terminal", False),
+        tipo_resultado=d.get("tipo_resultado", "neutro"),
+        efecto=d.get("efecto", {}),
+    )
+    # Reconstruimos las opciones recursivamente.
+    n.opciones = [
+        (op[0], _deserializar_nodo_arbol(op[1]), op[2])
+        for op in d.get("opciones", [])
+    ]
+    return n
+
+
+def _serializar_situaciones(situaciones):
+    """dict {nodo_id: ArbolDecisiones} -> dict serializable.
+
+    Las claves del dict resultante son strings (JSON requiere claves
+    string), las convertimos de vuelta a int al deserializar.
+    """
+    return {
+        str(nid): _serializar_nodo_arbol(arbol.raiz)
+        for nid, arbol in situaciones.items()
+    }
+
+
+def _deserializar_situaciones(d):
+    """dict serializable -> dict {nodo_id: ArbolDecisiones}."""
+    return {
+        int(nid): ArbolDecisiones(_deserializar_nodo_arbol(arbol_d))
+        for nid, arbol_d in d.items()
+    }
+
+
+# ===========================================================================
 # CLASE UI - Helpers de interfaz (botones, paneles, texto)
 # ===========================================================================
 class UI:
@@ -470,6 +545,18 @@ class Juego:
         self.nodo_evento_actual = None     # nodo cuya situacion estamos viendo
         self.opcion_hover = -1             # opcion del arbol bajo el mouse
         self.pantalla_anterior = "menu"    # a donde volver desde "ayuda"
+        # Ruta de indices que el jugador eligio en el arbol actual.
+        # Se llena cada vez que llamamos arbol.elegir(i) en pantalla_evento.
+        # Cuando el cliente llega a una hoja, envia esta ruta al servidor
+        # con la accion "decidir" para que el server pueda replayear el
+        # mismo camino y aplicar el efecto correcto al jugador correcto.
+        self.ruta_decision = []
+        # Cliente: ultima posicion conocida del jugador local. Lo usamos
+        # para detectar "acabo de moverme a un nuevo nodo" en
+        # _sincronizar_desde_servidor, y auto-abrir la situacion si el
+        # nodo tiene conflicto sin resolver. Sin esto, el invitado se
+        # quedaba en el mapa sin poder accionar.
+        self._pos_jugador_anterior = -1
 
         # ---- EFECTOS VISUALES ----
         self.particulas = GestorParticulas()
@@ -1741,12 +1828,12 @@ class Juego:
                           clave_imagen="boton_continuar")
             for e in eventos:
                 if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 and rect_cont.collidepoint(e.pos):
-                    self._aplicar_efecto_hoja(nodo, arbol.actual)
+                    # _finalizar_decision aplica localmente si soy host/solo,
+                    # o envia accion "decidir" al servidor si soy cliente.
                     self.audio.play("nivel" if tipo == "bueno" else "fallo")
-                    self.pantalla = "mapa"
+                    self._finalizar_decision(nodo, arbol)
                 if e.type == pygame.KEYDOWN and e.key == pygame.K_RETURN:
-                    self._aplicar_efecto_hoja(nodo, arbol.actual)
-                    self.pantalla = "mapa"
+                    self._finalizar_decision(nodo, arbol)
             return
 
         # ---- SI HAY OPCIONES (rama intermedia) ----
@@ -1760,11 +1847,16 @@ class Juego:
             self.ui.boton(rect, f"{i+1}. {texto_op}", hover=hover)
             for e in eventos:
                 if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 and rect.collidepoint(e.pos):
+                    # Trackear el indice elegido para la ruta de decision.
+                    # En multijugador, esto se envia al servidor cuando
+                    # llegamos a la hoja final.
+                    self.ruta_decision.append(i)
                     arbol.elegir(i); self.audio.play("click")
                 # Teclas numericas para elegir opciones rapidamente.
                 if e.type == pygame.KEYDOWN and e.key in (pygame.K_1, pygame.K_2, pygame.K_3):
                     idx = e.key - pygame.K_1
                     if idx < len(arbol.actual.opciones):
+                        self.ruta_decision.append(idx)
                         arbol.elegir(idx); self.audio.play("click")
 
         # Boton de salir (escape sin tomar decision).
@@ -2081,17 +2173,53 @@ class Juego:
         # reiniciar() vuelve al nodo raiz del arbol (por si el jugador
         # ya habia avanzado en este arbol antes).
         arbol.reiniciar()
+        # Limpiamos la ruta de decision para empezar a registrar de cero.
+        # Importante para multijugador: la ruta es lo que enviamos al
+        # servidor cuando llegamos a una hoja.
+        self.ruta_decision = []
         self.nodo_evento_actual = nodo
         self.pantalla = "evento"
 
-    def _aplicar_efecto_hoja(self, nodo, hoja):
+    def _finalizar_decision(self, nodo, arbol):
+        """Cierra la pantalla de evento.
+
+        Si soy CLIENTE, no aplico el efecto localmente: envio la ruta
+        de indices al servidor con la accion "decidir" y dejo que el
+        servidor aplique el efecto al jugador correspondiente (yo) y
+        difunda el nuevo estado a todos. Asi el invitado puede tomar
+        decisiones reales en multijugador.
+
+        Si soy HOST o SOLO, aplico el efecto localmente como siempre.
+        """
+        if self.estado.modo == "cliente" and self.cliente is not None:
+            # Cliente: enviar la ruta tomada al servidor. El server tiene
+            # los mismos arboles y puede replayear la ruta para aplicar
+            # el efecto correcto.
+            self.cliente.enviar_accion("decidir", {
+                "nodo": nodo.id,
+                "ruta": list(self.ruta_decision),
+            })
+        else:
+            # Host o solo: aplicar localmente.
+            self._aplicar_efecto_hoja(nodo, arbol.actual)
+        self.ruta_decision = []
+        self.pantalla = "mapa"
+
+    def _aplicar_efecto_hoja(self, nodo, hoja, id_jugador=None):
         """Aplica los efectos numericos (puntos, salud, resolver, poder)
         de una hoja del arbol de decisiones al estado del juego.
 
         Esto se llama cuando el jugador hace click en "Continuar" tras
         llegar a una hoja del arbol.
+
+        id_jugador: indice del jugador en self.estado.jugadores al que
+        aplicar los puntos/poderes. Por defecto el jugador_local (host
+        o solo). En multijugador, el server llama esto pasando el id
+        del cliente que tomo la decision.
         """
-        jl = self.estado.jugadores[self.estado.jugador_local]
+        if id_jugador is None:
+            id_jugador = self.estado.jugador_local
+        jl = self.estado.jugadores[id_jugador]
         ef = hoja.efecto or {}
         pts = ef.get("puntos", 0)
         salud = ef.get("salud", 0)
@@ -2191,6 +2319,30 @@ class Juego:
                 continue
             if ac == "mover":
                 self._mover_jugador(idx, int(datos.get("destino", 0)))
+            elif ac == "decidir":
+                # Cliente eligio una opcion final en su arbol de decision.
+                # Replayeamos la ruta sobre nuestro propio arbol del nodo
+                # y aplicamos el efecto al jugador correspondiente.
+                nodo_id = int(datos.get("nodo", -1))
+                ruta = datos.get("ruta", []) or []
+                if (nodo_id in self.estado.situaciones
+                        and nodo_id in self.estado.grafo.nodos):
+                    arbol = self.estado.situaciones[nodo_id]
+                    arbol.reiniciar()
+                    # Avanzamos por la misma ruta de indices que tomo el
+                    # cliente. Si la ruta es invalida (indices fuera de
+                    # rango), elegir() devuelve sin hacer nada.
+                    for i in ruta:
+                        try:
+                            arbol.elegir(int(i))
+                        except (ValueError, TypeError):
+                            break
+                    # Solo aplicamos efecto si efectivamente llegamos a
+                    # una hoja (sino el cliente envio una ruta incompleta).
+                    if arbol.actual.es_hoja():
+                        nodo = self.estado.grafo.nodos[nodo_id]
+                        self._aplicar_efecto_hoja(nodo, arbol.actual,
+                                                  id_jugador=idx)
         # Vaciamos la cola para no procesar dos veces.
         self.servidor.acciones_pendientes.clear()
 
@@ -2229,6 +2381,11 @@ class Juego:
                  "pos": j["pos"], "puntos": j["puntos"]}
                 for j in self.estado.jugadores
             ],
+            # IMPORTANTE para multijugador: enviamos los arboles de
+            # decision serializados para que los clientes puedan abrir
+            # situaciones y elegir opciones. Sin esto, los invitados
+            # nunca podrian "salvar" a nadie.
+            "situaciones": _serializar_situaciones(self.estado.situaciones),
             "fin": self.estado.fin, "victoria": self.estado.victoria,
         }
 
@@ -2273,6 +2430,32 @@ class Juego:
             if self.estado.jugador_local >= len(self.estado.jugadores):
                 self.estado.jugador_local = 0
         self.estado.salud_comunidad = s["salud"]
+        # Deserializar las situaciones que el servidor nos envio. Asi
+        # podemos abrir nuestra propia pantalla de evento cuando caigamos
+        # en un nodo con conflicto.
+        sit_data = s.get("situaciones", {})
+        if sit_data:
+            self.estado.situaciones = _deserializar_situaciones(sit_data)
+        # Auto-abrir situacion si acabamos de cambiar de posicion y
+        # estamos parados sobre un nodo con conflicto no resuelto. Sin
+        # esto, el invitado se quedaria en el mapa sin saber que tiene
+        # que hacer click otra vez en su propio nodo.
+        try:
+            mi_idx = self.estado.jugador_local
+            if 0 <= mi_idx < len(self.estado.jugadores):
+                mi_pos = self.estado.jugadores[mi_idx]["pos"]
+                if (mi_pos != self._pos_jugador_anterior
+                        and self.pantalla == "mapa"
+                        and mi_pos in self.estado.grafo.nodos):
+                    nodo_actual = self.estado.grafo.nodos[mi_pos]
+                    if (nodo_actual.estado != "resuelto"
+                            and mi_pos in self.estado.situaciones):
+                        self._abrir_situacion(nodo_actual)
+                self._pos_jugador_anterior = mi_pos
+        except (KeyError, AttributeError):
+            # Si algo sale mal en el auto-open, no es critico: el
+            # cliente puede hacer click en su nodo para abrir manualmente.
+            pass
         # Si el servidor marca fin de partida, vamos a la pantalla de fin.
         if s.get("fin"):
             self.estado.fin = True
