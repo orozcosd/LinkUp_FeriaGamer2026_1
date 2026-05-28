@@ -1652,8 +1652,22 @@ class Juego:
 
         Detras del menu se ve el mapa congelado (sin animaciones),
         cubierto por un velo oscuro para enfatizar la pausa.
+
+        En multijugador: procesamos red para no perder estado de los
+        otros jugadores mientras estamos pausados.
         """
         c = self.ui.col
+        # ---- PROCESAMIENTO DE RED ----
+        if self.servidor:
+            self.servidor.procesar()
+            self._sincronizar_jugadores_conectados()
+            self._procesar_acciones_servidor()
+        if self.cliente:
+            self.cliente.procesar()
+            if self.cliente.estado_juego:
+                self._sincronizar_desde_servidor()
+            if self.pantalla != "pausa":
+                return
 
         # Dibujamos el mapa al fondo (congelado, sin tick).
         self._dibujar_fondo("fondo_mapa")
@@ -1900,8 +1914,31 @@ class Juego:
 
     # ===================== PANTALLA: FIN =====================
     def pantalla_fin(self, eventos):
-        """Pantalla final con estadisticas y opcion de jugar otra vez."""
+        """Pantalla final con estadisticas y opcion de jugar otra vez.
+
+        IMPORTANTE para multijugador: procesar red AQUI tambien. Sin
+        esto, cuando el host reinicia (Jugar otra vez), el cliente se
+        queda atrapado en esta pantalla porque nunca lee el nuevo
+        snapshot que dice fin=False. Procesar red permite que la sync
+        detecte el reinicio y nos lleve al mapa.
+        """
         c = self.ui.col
+        # ---- PROCESAMIENTO DE RED ----
+        # Host procesa acciones de clientes (no aplican mucho aqui,
+        # pero mantienen la conexion fluida).
+        if self.servidor:
+            self.servidor.procesar()
+            self._sincronizar_jugadores_conectados()
+            self._procesar_acciones_servidor()
+        # Cliente lee snapshots. La sync detecta el reinicio si el host
+        # presiono "Jugar otra vez" y cambia pantalla a "mapa".
+        if self.cliente:
+            self.cliente.procesar()
+            if self.cliente.estado_juego:
+                self._sincronizar_desde_servidor()
+            # Si la sync nos saco de fin, no seguimos dibujando.
+            if self.pantalla != "fin":
+                return
         self._dibujar_fondo("fondo_menu")
         titulo = "Victoria!" if self.estado.victoria else "Fin de la partida"
         col = c["exito"] if self.estado.victoria else c["peligro"]
