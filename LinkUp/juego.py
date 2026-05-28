@@ -1625,6 +1625,17 @@ class Juego:
                     return
                 # Click en un vecino: intentar moverse.
                 if nodo.id in g.vecinos(nodo_actual.id):
+                    # En multijugador, no podemos pisar un nodo que otro
+                    # jugador ya esta ocupando. Damos feedback inmediato
+                    # asi el usuario sabe por que no pasa nada.
+                    if self.estado.modo in ("servidor", "cliente"):
+                        mi_id = self.estado.jugadores[self.estado.jugador_local]["id"]
+                        if any(j["pos"] == nodo.id and j["id"] != mi_id
+                               for j in self.estado.jugadores):
+                            self.audio.play("bloqueado")
+                            self.estado.msg("Nodo ocupado por otro jugador.",
+                                            self.ui.col["alerta"])
+                            return
                     if g.arista_transitable(nodo_actual.id, nodo.id):
                         # Si somos cliente, mandamos la accion al server
                         # en vez de aplicarla nosotros (server es la fuente
@@ -2152,6 +2163,20 @@ class Juego:
         """
         g = self.estado.grafo
         jl = self.estado.jugadores[id_jug]
+        # En multijugador, rechazar el movimiento si otro jugador ya esta
+        # en ese nodo. El servidor es la autoridad: aunque el cliente
+        # tambien valida antes de mandar, podria llegar una accion vieja
+        # cuando ya alguien ocupo el nodo. Rechazarla aqui evita teleports
+        # accidentales y conflictos visuales.
+        if self.estado.modo in ("servidor", "cliente"):
+            for i, otro in enumerate(self.estado.jugadores):
+                if i != id_jug and otro["pos"] == destino:
+                    # Notificar al jugador que intento moverse.
+                    if id_jug == self.estado.jugador_local:
+                        self.audio.play("bloqueado")
+                        self.estado.msg("Nodo ocupado por otro jugador.",
+                                        self.ui.col["alerta"])
+                    return
         if destino in g.vecinos(jl["pos"]) and g.arista_transitable(jl["pos"], destino):
             jl["pos"] = destino
             self.audio.play("mover")
