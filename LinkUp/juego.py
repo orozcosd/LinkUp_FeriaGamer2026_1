@@ -483,6 +483,12 @@ class EstadoJuego:
         self.mensaje_log = []
         self.modo = "individual"      # individual | servidor | cliente
         self.dificultad = "media"     # facil | media | dificil (no usado aun)
+        # Lock por situacion: dict {nodo_id: id_jugador} indica que
+        # jugador esta actualmente en la pantalla de decision de cada
+        # nodo. Sirve para evitar que dos jugadores intenten salvar el
+        # MISMO nodo a la vez en multijugador. El servidor es la
+        # autoridad de este dict y lo difunde en cada snapshot.
+        self.situaciones_en_uso = {}
 
     def msg(self, texto, color=None):
         """Anade un mensaje a las notificaciones del juego.
@@ -1625,17 +1631,6 @@ class Juego:
                     return
                 # Click en un vecino: intentar moverse.
                 if nodo.id in g.vecinos(nodo_actual.id):
-                    # En multijugador, no podemos pisar un nodo que otro
-                    # jugador ya esta ocupando. Damos feedback inmediato
-                    # asi el usuario sabe por que no pasa nada.
-                    if self.estado.modo in ("servidor", "cliente"):
-                        mi_id = self.estado.jugadores[self.estado.jugador_local]["id"]
-                        if any(j["pos"] == nodo.id and j["id"] != mi_id
-                               for j in self.estado.jugadores):
-                            self.audio.play("bloqueado")
-                            self.estado.msg("Nodo ocupado por otro jugador.",
-                                            self.ui.col["alerta"])
-                            return
                     if g.arista_transitable(nodo_actual.id, nodo.id):
                         # Si somos cliente, mandamos la accion al server
                         # en vez de aplicarla nosotros (server es la fuente
@@ -1870,13 +1865,13 @@ class Juego:
                         self.ruta_decision.append(idx)
                         arbol.elegir(idx); self.audio.play("click")
 
-        # Boton de salir (escape sin tomar decision).
+        # Boton de salir (escape sin tomar decision). Libera el lock.
         rect_back = pygame.Rect(panel.x + 30, panel.bottom - 70, 180, 46)
         self.ui.boton(rect_back, "Salir", hover=rect_back.collidepoint(mouse),
                       clave_imagen="boton_volver")
         for e in eventos:
             if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 and rect_back.collidepoint(e.pos):
-                self.pantalla = "mapa"
+                self._cancelar_decision()
 
     # ===================== PANTALLA: FIN =====================
     def pantalla_fin(self, eventos):
@@ -2163,20 +2158,6 @@ class Juego:
         """
         g = self.estado.grafo
         jl = self.estado.jugadores[id_jug]
-        # En multijugador, rechazar el movimiento si otro jugador ya esta
-        # en ese nodo. El servidor es la autoridad: aunque el cliente
-        # tambien valida antes de mandar, podria llegar una accion vieja
-        # cuando ya alguien ocupo el nodo. Rechazarla aqui evita teleports
-        # accidentales y conflictos visuales.
-        if self.estado.modo in ("servidor", "cliente"):
-            for i, otro in enumerate(self.estado.jugadores):
-                if i != id_jug and otro["pos"] == destino:
-                    # Notificar al jugador que intento moverse.
-                    if id_jug == self.estado.jugador_local:
-                        self.audio.play("bloqueado")
-                        self.estado.msg("Nodo ocupado por otro jugador.",
-                                        self.ui.col["alerta"])
-                    return
         if destino in g.vecinos(jl["pos"]) and g.arista_transitable(jl["pos"], destino):
             jl["pos"] = destino
             self.audio.play("mover")
@@ -2191,10 +2172,38 @@ class Juego:
             self._difundir_estado()
 
     def _abrir_situacion(self, nodo):
-        """Reinicia el arbol de la situacion y va a la pantalla evento."""
+        """Reinicia el arbol de la situacion y va a la pantalla evento.
+
+        En multijugador, verifica el lock por situacion: si otro jugador
+        ya esta salvando este mismo nodo, mostramos mensaje y no abrimos.
+        Si no esta ocupado, reservamos:
+          - HOST: marca el lock localmente y difunde el estado.
+          - CLIENTE: envia accion "reservar" al servidor; el server
+            confirmara (o rechazara si llego tarde) en el proximo snapshot.
+        """
         arbol = self.estado.situaciones.get(nodo.id)
         if arbol is None or nodo.estado == "resuelto":
             return
+        # ---- VERIFICAR LOCK EN MULTIJUGADOR ----
+        if self.estado.modo in ("servidor", "cliente") and self.estado.jugadores:
+            mi_id = self.estado.jugadores[self.estado.jugador_local]["id"]
+            lock = self.estado.situaciones_en_uso.get(nodo.id)
+            if lock is not None and lock != mi_id:
+                self.audio.play("bloqueado")
+                self.estado.msg("Otro jugador esta salvando ese nodo.",
+                                self.ui.col["alerta"])
+                return
+            # Reservar el lock.
+            if self.estado.modo == "servidor":
+                # Host: aplicar lock localmente y difundir.
+                self.estado.situaciones_en_uso[nodo.id] = mi_id
+                self._difundir_estado()
+            else:
+                # Cliente: enviar accion al servidor. Mientras tanto,
+                # abrimos pantalla optimisticamente (si el server
+                # rechaza, _sincronizar_desde_servidor nos sacara).
+                if self.cliente is not None:
+                    self.cliente.enviar_accion("reservar", {"nodo": nodo.id})
         # reiniciar() vuelve al nodo raiz del arbol (por si el jugador
         # ya habia avanzado en este arbol antes).
         arbol.reiniciar()
@@ -2204,6 +2213,27 @@ class Juego:
         self.ruta_decision = []
         self.nodo_evento_actual = nodo
         self.pantalla = "evento"
+
+    def _cancelar_decision(self):
+        """Cierra pantalla_evento SIN aplicar efecto. Libera el lock.
+
+        Se llama cuando el jugador presiona "Salir" o Escape en la
+        pantalla de evento. Importante: libera el lock para que otros
+        jugadores puedan intentar salvar ese nodo.
+        """
+        nodo = self.nodo_evento_actual
+        if nodo is not None and self.estado.jugadores:
+            mi_id = self.estado.jugadores[self.estado.jugador_local]["id"]
+            if self.estado.modo == "cliente" and self.cliente is not None:
+                # Cliente: pedirle al server que libere el lock.
+                self.cliente.enviar_accion("liberar", {"nodo": nodo.id})
+            elif self.estado.modo == "servidor":
+                # Host: liberar localmente si era mio y difundir.
+                if self.estado.situaciones_en_uso.get(nodo.id) == mi_id:
+                    self.estado.situaciones_en_uso.pop(nodo.id, None)
+                    self._difundir_estado()
+        self.ruta_decision = []
+        self.pantalla = "mapa"
 
     def _finalizar_decision(self, nodo, arbol):
         """Cierra la pantalla de evento.
@@ -2273,6 +2303,11 @@ class Juego:
             jl["poderes"][poder] = jl["poderes"].get(poder, 0) + 1
             self.estado.msg(f"Obtienes: {self._nombre_poder(poder)}!", self.ui.col["primario"])
             self.audio.play("poder")
+        # Liberar el lock de esta situacion. Ya termino la decision,
+        # el nodo puede volver a estar disponible (aunque si fue resuelto,
+        # nadie lo va a abrir de todas formas porque _abrir_situacion
+        # filtra estado=="resuelto").
+        self.estado.situaciones_en_uso.pop(nodo.id, None)
         self._difundir_estado()
 
     def _nombre_poder(self, k):
@@ -2366,8 +2401,32 @@ class Juego:
                     # una hoja (sino el cliente envio una ruta incompleta).
                     if arbol.actual.es_hoja():
                         nodo = self.estado.grafo.nodos[nodo_id]
+                        # _aplicar_efecto_hoja se encarga de liberar el
+                        # lock automaticamente, no hace falta hacerlo aqui.
                         self._aplicar_efecto_hoja(nodo, arbol.actual,
                                                   id_jugador=idx)
+            elif ac == "reservar":
+                # Cliente quiere reservar la situacion de un nodo. Si
+                # esta libre (o ya era suya), le concedemos el lock. Si
+                # otro la tiene, ignoramos y el cliente vera en el sync
+                # que su lock no se aplico (su pantalla_evento se cierra).
+                nodo_id = int(datos.get("nodo", -1))
+                if nodo_id in self.estado.grafo.nodos:
+                    # idx es el id en self.estado.jugadores; el "id" de
+                    # ese jugador es lo que guardamos en el lock.
+                    mi_jug_id = self.estado.jugadores[idx]["id"]
+                    duenio = self.estado.situaciones_en_uso.get(nodo_id)
+                    if duenio is None or duenio == mi_jug_id:
+                        self.estado.situaciones_en_uso[nodo_id] = mi_jug_id
+                        self._difundir_estado()
+            elif ac == "liberar":
+                # Cliente cancela su decision; soltar el lock si era suyo.
+                nodo_id = int(datos.get("nodo", -1))
+                if idx < len(self.estado.jugadores):
+                    mi_jug_id = self.estado.jugadores[idx]["id"]
+                    if self.estado.situaciones_en_uso.get(nodo_id) == mi_jug_id:
+                        self.estado.situaciones_en_uso.pop(nodo_id, None)
+                        self._difundir_estado()
         # Vaciamos la cola para no procesar dos veces.
         self.servidor.acciones_pendientes.clear()
 
@@ -2411,6 +2470,11 @@ class Juego:
             # situaciones y elegir opciones. Sin esto, los invitados
             # nunca podrian "salvar" a nadie.
             "situaciones": _serializar_situaciones(self.estado.situaciones),
+            # Locks de situaciones en uso. JSON requiere claves string.
+            "situaciones_en_uso": {
+                str(nid): jid
+                for nid, jid in self.estado.situaciones_en_uso.items()
+            },
             "fin": self.estado.fin, "victoria": self.estado.victoria,
         }
 
@@ -2461,6 +2525,27 @@ class Juego:
         sit_data = s.get("situaciones", {})
         if sit_data:
             self.estado.situaciones = _deserializar_situaciones(sit_data)
+        # Deserializar los locks de situaciones en uso. Las claves vienen
+        # como strings (limitacion JSON), las convertimos a int.
+        en_uso_data = s.get("situaciones_en_uso", {}) or {}
+        self.estado.situaciones_en_uso = {
+            int(nid): jid for nid, jid in en_uso_data.items()
+        }
+        # Si estoy en pantalla_evento pero el servidor dice que el lock
+        # ya no es mio (alguien mas lo tomo o el server me rechazo),
+        # cerrar la pantalla para no quedar en un estado inconsistente.
+        if (self.pantalla == "evento"
+                and self.nodo_evento_actual is not None
+                and self.estado.jugadores
+                and 0 <= self.estado.jugador_local < len(self.estado.jugadores)):
+            mi_id = self.estado.jugadores[self.estado.jugador_local]["id"]
+            lock = self.estado.situaciones_en_uso.get(
+                self.nodo_evento_actual.id)
+            if lock is not None and lock != mi_id:
+                self.estado.msg("Otro jugador esta salvando ese nodo.",
+                                self.ui.col["alerta"])
+                self.ruta_decision = []
+                self.pantalla = "mapa"
         # Auto-abrir situacion si acabamos de cambiar de posicion y
         # estamos parados sobre un nodo con conflicto no resuelto. Sin
         # esto, el invitado se quedaria en el mapa sin saber que tiene
